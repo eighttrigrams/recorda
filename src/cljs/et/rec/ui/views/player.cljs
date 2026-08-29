@@ -143,6 +143,10 @@
          [:div.meta-line
           [:span (:width take) "×" (:height take)]
           [:span "audio: " (or (:audio-source take) "ffmpeg")]
+          (when-let [db (:peak-dbfs take)]
+            [:span {:style (when (< db -30) {:color "var(--record)"})}
+             "peak " (js/Math.round db) " dBFS"
+             (when (< db -30) " — recorded too quietly")])
           [:span "mic led the picture by "
            (js/Math.round (* 1000 (or (:audio-lead take) (:audio-offset take) 0))) " ms"]
           [:span [:a {:href (str "/media/" id "/audio.wav") :download true} "audio.wav"]]

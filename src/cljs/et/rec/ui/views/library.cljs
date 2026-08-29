@@ -19,7 +19,8 @@
           [:div.title (:title t)]
           [:div.sub {:class (when (not= "ready" (:status t)) "busy")}
            (if (= "ready" (:status t))
-             (str (fmt-dur (:duration t)) " · " (:width t) "×" (:height t))
+             (str (fmt-dur (:duration t)) " · " (:width t) "×" (:height t)
+                  (when-let [db (:peak-dbfs t)] (str " · " (js/Math.round db) " dB")))
              (:status t))]
           (when (= (:id t) selected)
             [:div {:style {:margin-top "6px" :display "flex" :gap "6px"}}

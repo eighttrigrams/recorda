@@ -15,9 +15,41 @@
   (:require [reagent.core :as r]))
 
 (defonce state
-  (r/atom {:recording? false :device nil :samples 0 :error nil}))
+  (r/atom {:recording? false :monitoring? false :device nil
+           :samples 0 :error nil
+           :peak 0.0        ;; loudest sample in the last moment, 0..1
+           :hold 0.0}))     ;; the loudest since the meter was last reset
 
 (defonce ^:private cap (atom nil))
+
+;; The meter is updated from the worklet's messages, which arrive 375 times a
+;; second. Writing a reagent atom that often would re-render the page at the
+;; same rate for a bar that only has to look alive, so the peak is accumulated
+;; here and published on an interval.
+(defonce ^:private pending (atom 0.0))
+
+(defn- note-peak! [^js chunk]
+  (let [n (.-length chunk)]
+    (loop [i 0 m 0.0]
+      (if (>= i n)
+        (when (> m @pending) (reset! pending m))
+        (recur (inc i) (max m (js/Math.abs (aget chunk i))))))))
+
+(defonce ^:private _meter
+  (js/setInterval
+    (fn []
+      (when (or (:recording? @state) (:monitoring? @state))
+        (let [p @pending]
+          (reset! pending 0.0)
+          (swap! state (fn [s] (assoc s :peak p :hold (max (:hold s) p)))))))
+    60))
+
+(defn reset-hold! [] (swap! state assoc :hold 0.0))
+
+(defn dbfs
+  "0..1 as dBFS, floored so a silent input does not read as minus infinity."
+  [x]
+  (if (or (nil? x) (<= x 0.0000001)) -80.0 (* 20 (js/Math.log10 x))))
 
 (def ^:private worklet-src
   "Ships as a blob rather than a file, because it is nine lines and a served
@@ -97,6 +129,7 @@
                                         (when (nil? @live)
                                           (reset! live (js/Date.now))
                                           (on-live @live))
+                                        (note-peak! (.-data e))
                                         (.push chunks (.-data e))))
                                 (.connect src node)
                                 (reset! cap {:ctx ctx :stream stream :node node
@@ -149,3 +182,52 @@
     (.close ctx)
     (reset! cap nil)
     (swap! state assoc :recording? false)))
+
+(defn monitor!
+  "Open the microphone without recording, so the level meter has something to
+   show. This is what you set the interface's gain against — the alternative is
+   recording a take, listening, adjusting and recording again, which is how a
+   whole afternoon disappears into a signal that turns out to be 25 dB down."
+  [preferred-name]
+  (when-not (or (:recording? @state) (:monitoring? @state))
+    (-> (.getUserMedia (.-mediaDevices js/navigator) #js {:audio true})
+        (.then (fn [warm]
+                 (.forEach (.getTracks warm) (fn [t] (.stop t)))
+                 (.enumerateDevices (.-mediaDevices js/navigator))))
+        (.then (fn [devs]
+                 (let [d (pick-device (array-seq devs) preferred-name)]
+                   (.getUserMedia (.-mediaDevices js/navigator)
+                                  #js {:audio (if d
+                                                #js {:deviceId #js {:exact (.-deviceId d)}
+                                                     :echoCancellation false
+                                                     :noiseSuppression false
+                                                     :autoGainControl  false}
+                                                #js {:echoCancellation false
+                                                     :noiseSuppression false
+                                                     :autoGainControl  false})}))))
+        (.then (fn [stream]
+                 (let [ctx (js/AudioContext. #js {:sampleRate 48000})
+                       url (.createObjectURL js/URL (js/Blob. #js [worklet-src]
+                                                              #js {:type "application/javascript"}))]
+                   (-> (.addModule (.-audioWorklet ctx) url)
+                       (.then (fn []
+                                (let [src  (.createMediaStreamSource ctx stream)
+                                      node (js/AudioWorkletNode. ctx "rec")]
+                                  (set! (.. node -port -onmessage)
+                                        (fn [e] (note-peak! (.-data e))))
+                                  (.connect src node)
+                                  (reset! cap {:ctx ctx :stream stream :node node
+                                               :chunks (array) :rate (.-sampleRate ctx)})
+                                  (swap! state assoc :monitoring? true :error nil :hold 0.0
+                                         :device (some-> (aget (.getAudioTracks stream) 0) .-label)))))))))
+        (.catch (fn [e]
+                  (swap! state assoc :monitoring? false :error (str e)))))))
+
+(defn stop-monitor! []
+  (when (:monitoring? @state)
+    (when-let [{:keys [ctx stream node]} @cap]
+      (try (.disconnect node) (catch :default _ nil))
+      (.forEach (.getTracks stream) (fn [t] (.stop t)))
+      (.close ctx)
+      (reset! cap nil))
+    (swap! state assoc :monitoring? false :peak 0.0)))

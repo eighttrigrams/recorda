@@ -96,6 +96,8 @@
    lead that gets trimmed off the front of the recording when it is uploaded."
   []
   (swap! app assoc :error nil :audio-live-ms nil)
+  ;; A monitor holds the same device; take it back before recording.
+  (mic/stop-monitor!)
   (mic/start!
     (get-in @app [:devices :chosen-mic :name])
     ;; on-live: sound is really flowing, so now start the picture

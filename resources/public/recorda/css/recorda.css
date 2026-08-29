@@ -145,3 +145,30 @@ body { max-width: 1600px; }
   font-size: 0.72em; color: var(--muted-text);
   font-variant-numeric: tabular-nums; margin-right: 4px;
 }
+
+/* --- input level ---------------------------------------------------------
+   Aim the hold mark at about -12 dBFS. The scale is -60..0 because that is
+   where everything worth seeing on a voice track lives. */
+
+.meter-wrap { display: inline-flex; align-items: center; gap: 8px; }
+.meter {
+  position: relative; display: inline-block;
+  width: 120px; height: 8px; border-radius: 4px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--input-border);
+  overflow: hidden;
+}
+.meter-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  transition: width 60ms linear;
+}
+.meter.live { border-color: var(--accent); }
+.meter-hold {
+  position: absolute; top: -1px; bottom: -1px; width: 2px;
+  background: var(--text-primary); opacity: 0.7;
+}
+.meter-read { font-size: 0.76em; font-variant-numeric: tabular-nums; }
+.meter-read.low  { color: var(--record); }
+.meter-read.hot  { color: var(--record); }
+.meter-read.good { color: var(--text-secondary); }

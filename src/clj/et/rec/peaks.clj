@@ -80,4 +80,13 @@
           (json/generate-string
             {:duration duration
              :peaks    (mapv #(/ (Math/round (* (double %) 1000.0)) 1000.0) peaks)}))
-    {:duration duration :count (count peaks)}))
+    (let [top (if (seq peaks) (apply max peaks) 0.0)]
+      {:duration duration
+       :count    (count peaks)
+       ;; The loudest sample in the take, in dBFS. Worth keeping on the row:
+       ;; a take recorded 25 dB down is not obvious from a waveform that has
+       ;; been normalised to the lane's height, and it is the single most
+       ;; common thing to get wrong at the interface.
+       :peak-dbfs (if (pos? top)
+                    (/ (Math/round (* 10.0 (* 20.0 (Math/log10 top)))) 10.0)
+                    -80.0)})))

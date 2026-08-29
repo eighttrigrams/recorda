@@ -63,11 +63,12 @@
           {:ok? false :error (:log res)})
       (let [pk (peaks/write! audio peaksf)]
         (store/update-meta! id merge
-                            {:status      :ready
-                             :duration    dur
-                             :audio-lead  lead
+                            {:status       :ready
+                             :duration     dur
+                             :audio-lead   lead
                              :audio-source "browser"
-                             :peak-count  (:count pk)})
+                             :peak-count   (:count pk)
+                             :peak-dbfs    (:peak-dbfs pk)})
         (when-not (config/get-conf :keep-capture? false)
           (io/delete-file (store/file id "capture.mkv") true))
         (io/delete-file uploaded true)
