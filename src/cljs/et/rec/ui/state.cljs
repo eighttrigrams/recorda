@@ -1,6 +1,7 @@
 (ns et.rec.ui.state
   "One atom, every call. The same shape the sibling apps use."
   (:require [et.rec.ui.api :as api]
+            [et.rec.ui.engine :as engine]
             [reagent.core :as r]))
 
 (defonce app
@@ -39,6 +40,8 @@
   (swap! app assoc :selected id :time 0.0 :playing? false
          :duration (or (:duration (first (filter (fn [r] (= id (:id r)))
                                                  (:recordings @app)))) 0.0))
+  ;; Decoding the whole take up front is what buys playback that cannot stall.
+  (engine/load! id)
   (fetch-peaks! id))
 
 ;; --- the take --------------------------------------------------------------
@@ -69,7 +72,9 @@
 (defn delete! [id]
   (api/DELETE (str "/api/recordings/" id)
               (fn [_]
-                (when (= id (:selected @app)) (swap! app assoc :selected nil :peaks nil))
+                (when (= id (:selected @app))
+                  (engine/unload!)
+                  (swap! app assoc :selected nil :peaks nil))
                 (fetch-recordings!))))
 
 (defn rename! [id title]

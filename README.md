@@ -134,41 +134,43 @@ reason and not as a matter of taste.
 
 ## Playing two files as one thing
 
-Two media elements will not stay together on their own, and the obvious way to
-make them is wrong. **Do not seek the audio to correct drift.** Seeking flushes
-its decoder, the flush stalls it, the stall puts it further behind than it was,
-and being further behind trips the correction again. The first version did
-exactly this: on a seven second take it fired 33 times — five audible stutters
-a second — with a drift trace that climbed to 68 ms and snapped back, over and
-over.
+**The audio clock is the master, and the audio is never touched.** The take is
+decoded once into an `AudioBuffer` and played by an `AudioBufferSourceNode`,
+which starts at a scheduled instant and plays the samples exactly as recorded.
+It cannot stall, cannot be seeked mid-flight, and is never rate-trimmed. The
+playhead is not read off any element — it is computed:
 
-What works is a **rate trim**. The video plays muted and authoritative; the
-audio's `playbackRate` is bent by up to 3% to close the gap. It converges just
-as fast, flushes nothing, and cannot feed itself. Browsers preserve pitch over
-a change that small, so it costs a slightly early or late word rather than a
-detuned one. A hard seek survives only for faults the trim cannot reach —
-past half a second, and never more than once every two.
+    position = offset-when-we-started + (ctx.currentTime - ctx-time-we-started-at)
 
-The other half is **starting them in the right order**. An audio element
-reports `paused false` and resolves its play promise well before a sample
-reaches the device; an external interface has a clock of its own to start. The
-video has no such wait, so starting both together opens every take out of step
-and leaves the trim correcting an offset that never had to exist. So the audio
-leads: play it, watch its own clock until it actually moves, and start the
-picture at that moment — with a one second bound, because an element that never
-starts must not take the picture down with it.
+The **picture** is what gets corrected, because correcting it is free: its rate
+can be bent 8% with nothing visible, and it can be seeked outright for the cost
+of one frame. The equivalent moves on the audio side are a warble and a click.
 
-The playhead is moved by writing to the DOM node, not through the state atom.
-Routing it through state re-rendered the whole stage sixty times a second, and
-that main-thread work is itself a source of the glitches this is avoiding.
+Two earlier versions are worth knowing about, because both are the obvious
+thing and both are audibly wrong. Slaving the audio by **seeking** it feeds
+itself — a seek flushes the decoder, the flush stalls it, the stall creates the
+drift that trips the next seek; measured, that fired 33 times in seven seconds.
+Slaving it by **trimming playbackRate** removes the flushes but runs a
+time-stretcher over speech for as long as the rate is held off 1.0, and it is
+never off it for long because the system clock and the audio clock genuinely
+drift. HTML once had `MediaController` for this job and it was withdrawn from
+the spec, the stated reason being that slaved elements "are not actually kept
+in sync".
+
+**Nothing moves until the audio clock does.** An `AudioContext` does not start
+its clock when you tell it to play — it starts when the output device is ready,
+and on a cold context that was over a second here. Following `playing?` rather
+than "is it actually sounding" put the picture in motion during that window,
+where it ran ahead and was hard-seeked backwards over and over. Measured after
+the fix: zero backward steps, video rate pinned at 1.000 for a whole take, and
+80–107 ms from click to motion once the context is warm.
 
 `space` plays and pauses, the arrows jump five seconds, and clicking either
 lane seeks.
 
-One caveat on how this was checked: the browser automation used here has no
-real audio output — its `AudioContext` clock advances 5 ms in 500 ms of wall
-time — so the numbers above are decoder events and clock traces, not listening.
-The ear is the acceptance test.
+The cost of decoding up front is memory: roughly 11 MB per minute of take
+(mono float32 at 48 kHz). Fine for the screencasts this is for; the thing to
+change first if it ever is not.
 
 ## Ports
 
