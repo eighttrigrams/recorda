@@ -1,0 +1,29 @@
+{:paths ["src/clj" "resources"]
+
+ ;; A short list on purpose, and the versions are the ones the sibling apps
+ ;; already resolve — this is not the place to be a version ahead of them.
+ ;;
+ ;; What is absent is as deliberate as what is here. recorda has no database,
+ ;; no accounts and no deployment, so next.jdbc, honeysql, sqlite-jdbc,
+ ;; ragtime, buddy and tools.build — which every sibling carries — are missing
+ ;; rather than unused. A recording is a directory on disk; the filesystem is
+ ;; the store, and it is one you can inspect with `ls`.
+ :deps
+ {org.clojure/clojure            {:mvn/version "1.12.5"}
+  ring/ring-core                 {:mvn/version "1.15.4"}
+  ring/ring-json                 {:mvn/version "0.5.1"}
+  info.sunng/ring-jetty9-adapter {:mvn/version "0.39.4"}
+  compojure/compojure            {:mvn/version "1.7.2"}
+  cheshire/cheshire              {:mvn/version "5.10.0"}
+  nrepl/nrepl                    {:mvn/version "1.7.0"}
+  com.taoensso/telemere          {:mvn/version "1.2.1"}
+  aero/aero                      {:mvn/version "1.1.6"}}
+
+ :aliases
+ {:run  {:exec-fn et.rec.server/-main}
+  :test {:extra-paths ["test/unit"]
+         :extra-deps  {io.github.cognitect-labs/test-runner
+                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                       ring/ring-mock {:mvn/version "0.6.2"}}
+         :exec-fn     cognitect.test-runner.api/test
+         :exec-args   {:dirs ["test/unit"]}}}}

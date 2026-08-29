@@ -1,0 +1,29 @@
+;; Copied to config.edn by scripts/start.sh on first run, which is why this is
+;; the file under version control and config.edn is not.
+{:port         #long #or [#env PORT 3200]
+ :nrepl-port   7902
+ :shadow?      true
+ :logfile      "logs/recorda.log"
+
+ ;; Where recordings land. Relative paths resolve against the checkout.
+ :recordings-dir "recordings"
+
+ ;; Both are resolved at run time by name and by measurement — see
+ ;; et.rec.devices. These are only the preferences that resolution honours.
+ ;;
+ ;; :screen :smallest picks the smaller display by pixel area, which is the
+ ;; whole point of this app; :largest and an explicit avfoundation index are
+ ;; the other two forms.
+ :screen       :smallest
+ :mic-name     "Scarlett Solo 4th Gen"
+
+ ;; The Scarlett 4th gen presents four channels — XLR mic, instrument, and a
+ ;; loopback pair. 0 is the microphone. See README.
+ :mic-channel  0
+
+ :video-bitrate "6M"
+ :framerate     30
+ ;; The capture is deleted once it has been split into video.mp4 and audio.wav,
+ ;; because everything in it now lives in those two — one by stream copy, one
+ ;; losslessly. Set this to keep it anyway, at roughly double the disk.
+ :keep-capture? false}

@@ -1,0 +1,24 @@
+.cpcache/
+.nrepl-port
+.shadow-cljs.pid
+target/
+node_modules/
+.shadow-cljs/
+resources/public/recorda/js/
+config.edn
+config.edn.*
+!config.edn.template
+logs/
+.lsp
+.clj-kondo/*
+!.clj-kondo/config.edn
+.env
+.envrc
+.DS_Store
+.dev-server.lock
+
+# The recordings themselves. A minute of 1440p is roughly 45 MB, so this is
+# not a "probably shouldn't" — a single afternoon would be the largest thing
+# in the repo by three orders of magnitude.
+recordings/*
+!recordings/.gitkeep

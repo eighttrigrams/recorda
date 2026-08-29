@@ -1,0 +1,8 @@
+{:source-paths ["src/cljs"]
+ :dependencies [[reagent "2.0.1"] [cljs-ajax "0.8.4"]]
+ :http {:port #shadow/env ["SHADOW_PORT" :as :int :default 9808]}
+ :builds {:app {:target     :browser
+                :output-dir "resources/public/recorda/js"
+                :asset-path "/js"
+                :modules    {:main {:init-fn et.rec.ui.core/init}}
+                :devtools   {:repl-pprint true}}}}
