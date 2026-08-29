@@ -9,6 +9,7 @@
             [et.rec.capture :as capture]
             [et.rec.config :as config]
             [et.rec.devices :as devices]
+            [et.rec.export :as export]
             [et.rec.media :as media]
             [et.rec.split :as split]
             [et.rec.store :as store]))
@@ -109,6 +110,19 @@
             (ok (store/read-meta id))
             (bad {:error (str "could not write audio: " (:error res))})))))))
 
+(defn export-handler
+  "POST /api/recordings/:id/export — mux the take's two tracks into one
+  export.mp4 and answer where it is. Regenerated on every call rather than
+  cached, because once edits exist the answer depends on them."
+  [req]
+  (let [id (get-in req [:params :id])]
+    (if (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such recording"}}
+      (let [r (export/export! id)]
+        (if (:ok? r)
+          (ok (assoc r :url (str "/media/" id "/export.mp4")))
+          (bad r))))))
+
 (defn media-handler
   "GET /media/:id/:name — a take's own files, with Range support so the video
   element can seek. Not under /api because it does not speak JSON."
@@ -118,15 +132,16 @@
     ;; recordings path, so "../../secrets.yaml" is not a filename this can be
     ;; talked into serving. The server binds to loopback, but a path traversal
     ;; reachable from any page the browser has open is not a loopback problem.
-    (if-not (#{"video.mp4" "audio.wav" "peaks.json" "capture.mkv" "ffmpeg.log"} name)
+    (if-not (#{"video.mp4" "audio.wav" "peaks.json" "capture.mkv" "ffmpeg.log" "export.mp4"} name)
       {:status 404 :body "no such file"}
       (media/file-response
         (store/file id name)
         (get-in req [:headers "range"])
         ;; The three derived assets are written once and never touched again,
-        ;; so they cache forever. The capture and the log are neither — one is
-        ;; being appended to while a take runs, the other is a debugging aid
-        ;; you want the current contents of.
+        ;; so they cache forever. The capture, the log and the export are not:
+        ;; one is appended to while a take runs, one is a debugging aid you
+        ;; want the current contents of, and the export is rebuilt on every
+        ;; request because once edits exist its content depends on them.
         (if (#{"video.mp4" "audio.wav" "peaks.json"} name)
           "private, max-age=31536000, immutable"
           "no-cache")))))

@@ -197,6 +197,27 @@ after the suite, prober on 3180 and remote-files-organizer on 3190. Declared in
 `config.edn` and `shadow-cljs.edn`, which is the single source; `config.edn`
 itself is gitignored and made from `config.edn.template` on first start.
 
+## Export
+
+`Export mp4` in the player mixes the two tracks back into one file and hands it
+to the browser's downloads, named after the take.
+
+The video is **stream-copied** — its frames came off the hardware encoder during
+the capture and are already h264 in an mp4, so a twenty minute export is a few
+seconds of work and costs no quality. Only the audio is encoded, to AAC at
+192k, which is transparent for a mono voice track and is what makes the result
+a file other things will open. `audio.wav` stays lossless and is what an edit,
+or a trip through a DAW, should start from.
+
+**This is the only place the two tracks become one**, deliberately, so the pair
+on disk stays the master and the mp4 stays a derivative you can throw away and
+remake.
+
+`export.mp4` is written beside the take and overwritten on each export, so a
+take you have exported costs roughly twice the disk until you delete it — and
+deleting the take takes it too. It is rebuilt on every request rather than
+cached, because the moment edits exist its contents depend on them.
+
 ## Editing, when it comes
 
 The shape is laid for it and none of it is built. `meta.edn` carries an
@@ -204,6 +225,10 @@ The shape is laid for it and none of it is built. `meta.edn` carries an
 **non-destructive** list — cuts and gain moves described, never applied to the
 files, and replayed through ffmpeg only on export. The captured take stays the
 captured take.
+
+Export is where that replay belongs, and it is already the shape that expects
+it: `et.rec.export/edit-args` turns an edit list into ffmpeg arguments and
+currently returns nothing. When it returns something, no caller changes.
 
 The two things to build first are a filmstrip in the video lane, which is
 `ffmpeg -i video.mp4 -vf fps=1/2,scale=160:-1`, and multi-resolution peaks,

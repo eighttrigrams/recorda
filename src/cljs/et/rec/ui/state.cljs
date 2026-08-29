@@ -140,6 +140,29 @@
   (api/PUT (str "/api/recordings/" id) {:title title}
            (fn [_] (fetch-recordings!))))
 
+(defn export!
+  "Mux a take into one mp4 and hand it straight to the browser's downloads.
+
+   The download is triggered rather than offered as a link, because the file is
+   rebuilt on every call: a link would be a URL whose contents change under it,
+   and the moment edits exist that is a genuinely confusing thing to have kept
+   in a tab."
+  [id]
+  (swap! app assoc :exporting? true :error nil)
+  (api/POST (str "/api/recordings/" id "/export")
+            (fn [r]
+              (swap! app assoc :exporting? false)
+              (let [title (or (:title (first (filter #(= id (:id %)) (:recordings @app)))) id)
+                    a     (.createElement js/document "a")]
+                (set! (.-href a) (:url r))
+                (set! (.-download a) (str title ".mp4"))
+                (.appendChild (.-body js/document) a)
+                (.click a)
+                (.remove a)))
+            (fn [e]
+              (swap! app assoc :exporting? false
+                     :error (or (get-in e [:response :error]) "export failed")))))
+
 (defn refresh-devices! []
   (api/POST "/api/devices/refresh" #(swap! app assoc :devices %)))
 

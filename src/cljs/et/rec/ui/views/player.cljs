@@ -137,6 +137,11 @@
                  (:playing? estate) "Pause"
                  :else              "Play")]
           [:button {:on-click (fn [_] (engine/seek! 0)) :disabled (not ready?)} "Start"]
+          ;; The one place the two tracks become one file again. Everything
+          ;; else in recorda keeps them apart on purpose.
+          [:button {:on-click (fn [_] (state/export! id))
+                    :disabled (:exporting? @state/app)}
+           (if (:exporting? @state/app) "Exporting…" "Export mp4")]
           [:span.timecode
            [:b (fmt (:time @state/app))] " / " (fmt (or (:duration take) 0))]]
          [lanes]
