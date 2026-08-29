@@ -6,12 +6,28 @@
             [et.rec.ui.views.recorder :as recorder]
             [reagent.dom.client :as rdomc]))
 
+(defn- build-stamp
+  "When the JavaScript this page is running was built.
+
+   Here because 'is the tab I am looking at running the code you just wrote'
+   is otherwise unanswerable from the outside, and answering it wrongly costs
+   a debugging session — a stale tab reproduces a bug that has been fixed, and
+   looks exactly like a fix that did not work."
+  []
+  (let [ms (some-> js/document .-body (.getAttribute "data-build") js/parseInt)]
+    (when (and ms (pos? ms))
+      (let [d (js/Date. ms)]
+        [:span.build-stamp
+         "build " (.padStart (str (.getHours d)) 2 "0")
+         ":" (.padStart (str (.getMinutes d)) 2 "0")]))))
+
 (defn app []
   [:div
    [:div.topbar
     [:h1 "recorda"]
     [recorder/devices-strip]
     [:div.spacer]
+    [build-stamp]
     [recorder/record-button]]
    (when-let [e (:error @state/app)]
      [:div.panel {:style {:margin-bottom "12px" :color "var(--record)"}} e])

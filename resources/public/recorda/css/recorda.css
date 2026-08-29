@@ -138,3 +138,10 @@ body { max-width: 1600px; }
 }
 .danger { background: transparent; color: var(--record); padding: 5px 10px; }
 .danger:hover { background: color-mix(in srgb, var(--record) 15%, transparent); }
+
+/* Which build this tab is running. Small and dim — it is only ever looked at
+   when something does not behave the way the code says it should. */
+.build-stamp {
+  font-size: 0.72em; color: var(--muted-text);
+  font-variant-numeric: tabular-nums; margin-right: 4px;
+}
