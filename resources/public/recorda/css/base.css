@@ -1,0 +1,142 @@
+:root {
+  /* Red is reserved. It means the machine is recording, and nothing else. */
+  --record: #dc2626;
+  --record-hover: #ef4444;
+  --body-bg: linear-gradient(135deg, #eef0f6 0%, #e3e7f0 45%, #f1f2f7 100%);
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-bg-subtle: rgba(255, 255, 255, 0.5);
+  --glass-bg-elevated: rgba(255, 255, 255, 0.85);
+  --glass-bg-description: rgba(255, 255, 255, 0.5);
+  --glass-border: rgba(255, 255, 255, 0.2);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  --glass-blur: 16px;
+  --glass-radius: 14px;
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --muted-text: #a1a1a6;
+  --border-color: #d1d1d6;
+  --input-border: rgba(0, 0, 0, 0.1);
+  --surface-subtle: rgba(0, 0, 0, 0.03);
+  --badge-excluded-bg: rgba(255, 59, 48, 0.2);
+  --badge-excluded-color: #ff3b30;
+}
+html.dark-mode {
+  color-scheme: dark;
+  --glass-bg: rgba(30, 30, 32, 0.85);
+  --glass-bg-subtle: rgba(50, 50, 52, 0.7);
+  --glass-bg-elevated: rgba(50, 50, 52, 0.95);
+  --glass-bg-description: rgba(200, 200, 200, 0.15);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --text-primary: #f5f5f7;
+  --text-secondary: #98989d;
+  --border-color: #3a3a3c;
+  --surface-subtle: rgba(255, 255, 255, 0.05);
+  --muted-text: #8e8e93;
+  --body-bg: linear-gradient(135deg, #14161c99 0%, #1b1e28 50%, #131519 100%);
+  /* The light-mode input border is a black wash, which vanishes on dark. */
+  --input-border: rgba(255, 255, 255, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --muted-text: #6c6c70; }
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 24px;
+  background: var(--body-bg);
+  min-height: 100vh;
+  color: var(--text-primary);
+  transition: background 2s ease, color 2s ease;
+}
+h1 {
+  margin: 0 0 4px 0;
+  font-weight: 600;
+  font-size: 1.5em;
+  letter-spacing: -0.02em;
+}
+h2 {
+  margin: 0;
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.login-form, .add-form { margin-bottom: 16px; display: flex; gap: 8px; }
+input {
+  padding: 10px 14px;
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  font-size: 0.95em;
+  color: var(--text-primary);
+  transition: all 0.2s ease;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+}
+input::placeholder { color: var(--text-secondary); }
+button {
+  padding: 10px 18px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.9em;
+  transition: all 0.2s ease;
+}
+button:hover { background: var(--accent-hover); transform: translateY(-1px); }
+button:active { transform: translateY(0); }
+.load-more-btn {
+  padding: 0;
+  background: none;
+  color: var(--text-secondary);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-weight: 400;
+  text-decoration: underline;
+}
+.load-more-btn:hover {
+  background: none;
+  transform: none;
+  color: var(--text-secondary);
+}
+.error {
+  color: #ff3b30;
+  padding: 12px 16px;
+  background: rgba(255, 59, 48, 0.1);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  font-size: 0.9em;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.error-dismiss {
+  background: none;
+  border: none;
+  color: #ff3b30;
+  font-size: 1.2em;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+*, *::before, *::after {
+  transition: background-color 2s ease, border-color 2s ease, color 2s ease, box-shadow 2s ease;
+}
+button, input, select, textarea {
+  transition: background-color 2s ease, border-color 2s ease, color 2s ease, box-shadow 2s ease, transform 0.2s ease;
+}

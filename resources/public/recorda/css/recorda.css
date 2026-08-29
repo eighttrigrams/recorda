@@ -1,0 +1,140 @@
+/* recorda — the recorder strip, the library, and the two-lane player. */
+
+body { max-width: 1600px; }
+
+/* --- header ------------------------------------------------------------- */
+
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 18px;
+}
+.topbar h1 { flex: 0 0 auto; }
+.topbar .spacer { flex: 1 1 auto; }
+
+/* What is about to be recorded, stated before it is. The point of this line
+   is that the screen and the mic are resolved fresh every time, so it is
+   worth showing which ones won. */
+.devices {
+  display: flex; gap: 18px; align-items: center;
+  font-size: 0.85em; color: var(--text-secondary);
+}
+.devices .dev strong { color: var(--text-primary); font-weight: 600; }
+.devices.not-ready { color: var(--record); }
+
+/* --- the record button -------------------------------------------------- */
+
+.record-btn {
+  background: var(--record); font-size: 1em; padding: 10px 20px;
+  display: inline-flex; align-items: center; gap: 9px;
+}
+.record-btn:hover:not(:disabled) { background: var(--record-hover); }
+.record-btn:disabled { opacity: 0.45; }
+.record-btn .dot {
+  width: 11px; height: 11px; border-radius: 50%; background: #fff;
+}
+.record-btn.recording .dot { border-radius: 2px; }
+.recording-now .dot { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.25 } }
+
+.elapsed {
+  font-variant-numeric: tabular-nums; font-size: 1.05em;
+  color: var(--record); font-weight: 600; min-width: 74px;
+}
+.processing-note { font-size: 0.85em; color: var(--text-secondary); }
+
+/* --- layout ------------------------------------------------------------- */
+
+.columns { display: flex; gap: 18px; align-items: flex-start; }
+.library { flex: 0 0 260px; }
+.stage   { flex: 1 1 auto; min-width: 0; }
+
+.panel {
+  background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border); border-radius: var(--glass-radius);
+  box-shadow: var(--glass-shadow); padding: 14px;
+}
+.panel h2 {
+  margin: 0 0 10px 0; font-size: 0.75em; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-secondary);
+}
+
+/* --- library ------------------------------------------------------------ */
+
+.take {
+  padding: 9px 10px; border-radius: 9px; cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 4px;
+}
+.take:hover { background: var(--surface-subtle); }
+.take.selected { background: var(--surface-subtle); border-color: var(--accent); }
+.take .title { font-weight: 500; font-size: 0.92em; }
+.take .sub {
+  font-size: 0.78em; color: var(--muted-text);
+  font-variant-numeric: tabular-nums; margin-top: 2px;
+}
+.take .sub.busy { color: var(--record); }
+.empty { color: var(--muted-text); font-size: 0.88em; padding: 6px 2px; }
+
+/* --- player ------------------------------------------------------------- */
+
+.video-wrap {
+  background: #000; border-radius: 10px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.video-wrap video { width: 100%; display: block; max-height: 62vh; }
+
+.transport {
+  display: flex; align-items: center; gap: 14px; margin: 12px 0 10px;
+}
+.transport button { padding: 7px 15px; }
+.timecode {
+  font-variant-numeric: tabular-nums; color: var(--text-secondary);
+  font-size: 0.92em;
+}
+.timecode b { color: var(--text-primary); font-weight: 600; }
+
+/* --- the two lanes ------------------------------------------------------
+
+   One playhead crosses both, which is the whole reason they are stacked in a
+   single positioned container rather than being two independent widgets. */
+
+.lanes { position: relative; user-select: none; }
+.lane { display: flex; align-items: stretch; margin-bottom: 6px; }
+.lane-label {
+  flex: 0 0 58px; font-size: 0.68em; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--text-secondary);
+  display: flex; align-items: center;
+}
+.lane-body {
+  flex: 1 1 auto; position: relative; border-radius: 7px; overflow: hidden;
+  cursor: pointer; background: var(--surface-subtle);
+  border: 1px solid var(--input-border);
+}
+.lane-video .lane-body { height: 42px; }
+.lane-audio .lane-body { height: 78px; }
+.lane-audio canvas { display: block; width: 100%; height: 100%; }
+
+/* The video lane has no filmstrip yet; a flat bar still carries the two
+   things it must — where the take starts and where it ends. */
+.video-strip {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg,
+              color-mix(in srgb, var(--accent) 30%, transparent),
+              color-mix(in srgb, var(--accent) 14%, transparent));
+}
+
+.playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: var(--record); pointer-events: none; z-index: 3;
+}
+.playhead::before {
+  content: ''; position: absolute; top: -4px; left: -4px;
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 7px solid var(--record);
+}
+
+.meta-line {
+  margin-top: 12px; font-size: 0.8em; color: var(--muted-text);
+  display: flex; gap: 16px; flex-wrap: wrap;
+}
+.danger { background: transparent; color: var(--record); padding: 5px 10px; }
+.danger:hover { background: color-mix(in srgb, var(--record) 15%, transparent); }
