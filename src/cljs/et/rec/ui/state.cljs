@@ -2,6 +2,7 @@
   "One atom, every call. The same shape the sibling apps use."
   (:require [et.rec.ui.api :as api]
             [et.rec.ui.engine :as engine]
+            [et.rec.ui.mic :as mic]
             [reagent.core :as r]))
 
 (defonce app
@@ -16,7 +17,9 @@
            :error      nil}))
 
 (defn recording? [] (= "recording" (get-in @app [:status :status])))
-(defn processing? [] (= "processing" (get-in @app [:status :status])))
+(defn processing? []
+  (or (:uploading? @app)
+      (#{"processing" "awaiting-audio"} (get-in @app [:status :status]))))
 (defn busy? [] (or (recording?) (processing?)))
 
 (defn selected-take []
@@ -58,16 +61,70 @@
                (when (and (= was "processing") (= (:status s) "idle"))
                  (fetch-recordings!))))))
 
-(defn start! []
-  (swap! app assoc :error nil)
-  (api/POST "/api/record/start"
-            #(swap! app assoc :status %)
-            #(swap! app assoc :error (or (get-in % [:response :error]) "could not start"))))
+(defn- upload-audio!
+  "Send the microphone recording for a take, with the lead time that lines it
+   up against the picture. Sent as raw bytes rather than through cljs-ajax,
+   which has no comfortable way to post an ArrayBuffer."
+  [id buffer lead-ms]
+  (swap! app assoc :uploading? true)
+  (-> (js/fetch (str "/api/recordings/" id "/audio")
+                #js {:method  "POST"
+                     :headers #js {"Content-Type"    "application/octet-stream"
+                                   "X-Audio-Lead-Ms" (str lead-ms)}
+                     :body    buffer})
+      (.then (fn [res]
+               (swap! app assoc :uploading? false)
+               (when-not (.-ok res)
+                 (swap! app assoc :error "the server would not take the audio"))
+               (fetch-recordings!)
+               (fetch-status!)))
+      (.catch (fn [e]
+                (swap! app assoc :uploading? false
+                       :error (str "could not send the audio: " e))
+                (fetch-status!)))))
 
-(defn stop! []
+(defn start!
+  "Begin a take.
+
+   **The microphone leads.** It is opened first and the screen capture is not
+   started until real audio has arrived, because an interface takes its own
+   time to come up — over a second, on this machine — and a picture that starts
+   during that window is a picture with no sound under its opening seconds.
+
+   The server answers with `video-started-at`, the instant frames actually
+   began, and the difference between that and the moment audio went live is the
+   lead that gets trimmed off the front of the recording when it is uploaded."
+  []
+  (swap! app assoc :error nil :audio-live-ms nil)
+  (mic/start!
+    (get-in @app [:devices :chosen-mic :name])
+    ;; on-live: sound is really flowing, so now start the picture
+    (fn [live-ms]
+      (swap! app assoc :audio-live-ms live-ms)
+      (api/POST "/api/record/start"
+                (fn [st] (swap! app assoc :status st))
+                (fn [e]
+                  (mic/cancel!)
+                  (swap! app assoc :error (or (get-in e [:response :error])
+                                              "could not start the screen capture")))))
+    (fn [e] (swap! app assoc :error (str "microphone: " e)))))
+
+(defn stop!
+  "End the take: stop the picture, then hand over the sound."
+  []
   (api/POST "/api/record/stop"
-            (fn [_] (fetch-status!))
-            #(swap! app assoc :error (or (get-in % [:response :error]) "could not stop"))))
+            (fn [res]
+              (let [id   (:id res)
+                    wav  (mic/stop!)
+                    lead (max 0 (- (or (get-in @app [:status :video-started-at]) 0)
+                                   (or (:audio-live-ms @app) 0)))]
+                (fetch-status!)
+                (if (and id wav)
+                  (upload-audio! id (:buffer wav) lead)
+                  (swap! app assoc :error "no audio was recorded for this take"))))
+            (fn [e]
+              (mic/cancel!)
+              (swap! app assoc :error (or (get-in e [:response :error]) "could not stop")))))
 
 (defn delete! [id]
   (api/DELETE (str "/api/recordings/" id)

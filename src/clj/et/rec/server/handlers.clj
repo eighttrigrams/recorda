@@ -5,10 +5,12 @@
    sibling apps follow and which /api/describe parses to publish the route
    list. It is prose doing double duty, so the first line of a docstring here
    is not free-form."
-  (:require [et.rec.capture :as capture]
+  (:require [clojure.java.io :as io]
+            [et.rec.capture :as capture]
             [et.rec.config :as config]
             [et.rec.devices :as devices]
             [et.rec.media :as media]
+            [et.rec.split :as split]
             [et.rec.store :as store]))
 
 (defn- ok [body] {:status 200 :body body})
@@ -78,6 +80,34 @@
       (if (store/delete! id)
         (ok {:deleted id})
         {:status 404 :body {:error "no such recording"}}))))
+
+(defn upload-audio-handler
+  "POST /api/recordings/:id/audio — the microphone recording for a take, as a
+  WAV body, with `X-Audio-Lead-Ms` saying how long the mic was already running
+  before the first video frame.
+
+  The browser records the sound because ffmpeg's AVFoundation audio input drops
+  roughly 11% of it — see the note in et.rec.capture. This is where that
+  recording lands and where it is lined up with the picture."
+  [req]
+  (let [id   (get-in req [:params :id])
+        lead (or (some-> (get-in req [:headers "x-audio-lead-ms"]) parse-long) 0)]
+    (cond
+      (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such recording"}}
+
+      (nil? (:body req))
+      (bad {:error "no audio body"})
+
+      :else
+      (let [tmp (java.io.File/createTempFile (str "recorda-" id "-") ".wav")]
+        (io/copy (:body req) tmp)
+        (let [res (try (split/finish-audio! id tmp lead)
+                       (catch Exception e {:ok? false :error (.getMessage e)})
+                       (finally (capture/audio-received!)))]
+          (if (:ok? res)
+            (ok (store/read-meta id))
+            (bad {:error (str "could not write audio: " (:error res))})))))))
 
 (defn media-handler
   "GET /media/:id/:name — a take's own files, with Range support so the video

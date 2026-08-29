@@ -50,7 +50,10 @@
     (GET    "/recordings"      [] h/list-handler)
     (GET    "/recordings/:id"  [] h/get-handler)
     (PUT    "/recordings/:id"  [] h/rename-handler)
-    (DELETE "/recordings/:id"  [] h/delete-handler)))
+    (DELETE "/recordings/:id"  [] h/delete-handler)
+    ;; Raw WAV in, not JSON. wrap-json-body leaves a non-JSON content type
+    ;; alone, so the body arrives here as the stream it was sent as.
+    (POST   "/recordings/:id/audio" [] h/upload-audio-handler)))
 
 (defn- cache-bust []
   (let [f (io/file "resources/public/recorda/js/main.js")]

@@ -32,42 +32,60 @@ They are still recorded by **one ffmpeg, from one AVFoundation session**, as
 `5:1` — one input, both streams. Two inputs would be two device sessions with
 two clocks and nothing tying them together.
 
-## The second that is not there
+## The sound does not come from ffmpeg
 
-The screen starts delivering frames immediately. The interface takes about a
-second to wake up. Measured on this machine, across four takes:
+**ffmpeg's AVFoundation audio input drops about 11% of what it is given** on
+this machine, in every version tried. It discards roughly one 512-sample buffer
+ten times a second and concatenates what survives, so speech comes out with
+pieces cut from it. It sounds like jitter, and it is baked into the file — no
+amount of work on the player can touch it.
 
-```
-0.944 s    1.031 s    1.404 s    0.043 s
-```
+Measured with a click train played at exactly 100.000 ms, through the
+Scarlett's digital loopback:
 
-The last one is low because the Scarlett was still warm from the take before
-it. **The gap is real, it is different every time, and it cannot be a
-constant.** Anything that hardcodes it is right once.
+    played      100.000 ms
+    ffmpeg       88.5 ms, and 89.7 ms on a second run
+    deficit      ~10.7 ms = 512 samples at 48 kHz
 
-This is also why the capture is a `.mkv` and not an `.mp4`. Matroska records
-the gap faithfully, as the audio stream's `start_time`. Hand the same two
-streams to the MP4 muxer and it is discarded without a word — which puts your
-voice a second ahead of the picture, in a file that looks fine.
+Ruled out one at a time: the screen capture (audio-only loses the same), the
+interface (other input devices lose too), the ffmpeg version (7.1.5 and 9.0.1
+identical), `-thread_queue_size`, `-drop_late_frames`, channel count, the `pan`
+filter, and the player used as the test source. **Audacity records the same
+interface cleanly**, which is what says the hardware is healthy and ffmpeg's
+input is not.
 
-So: capture to Matroska, read the gap back out with ffprobe, then write it into
-`audio.wav` as **real silence** at the head. After that the WAV's first sample
-is the video's first frame and there is nothing left to remember. The tail is
-padded the same way, to the video's exact length, so the two lanes are the same
-length and a cut at the end means one thing rather than two.
+So **the browser records the microphone** — `getUserMedia` into an
+`AudioWorklet`, in `et.rec.ui.mic` — and ffmpeg keeps only the screen, which it
+captures perfectly well. Over a five minute capture the browser lost **91 ms**
+in total, 0.03%, against ffmpeg's 11% in every second.
 
-The number is kept in `meta.edn` and shown under the player, because a take
-where the mic came up 1.4 s late is a take whose first breath is missing.
+An AudioWorklet and not a `ScriptProcessorNode`: the latter is deprecated
+precisely because it runs on the main thread and drops audio whenever the page
+is busy, and a screen recorder's page is not idle.
 
-## Your Scarlett has four channels
+## Which means the two recorders must be lined up
 
-The Solo 4th gen presents **four** to CoreAudio — the XLR mic, the instrument
-input, and a loopback pair the 4th gen added. Record it as it comes and you get
-a four channel file, three of whose channels are silence and whatever the
-desktop was playing.
+They start independently, so something has to measure the gap rather than
+assume it.
 
-recorda takes channel 0, the microphone, and writes mono. `:mic-channel` in
-`config.edn` if that is ever wrong.
+**The microphone leads.** It is opened first, and the screen capture does not
+start until real audio has arrived — not when the stream was requested, which is
+a different and much earlier instant. An interface has a clock of its own to
+start, and on this machine that has been over a second. Starting the picture
+during that window gives you opening seconds with no sound under them.
+
+The server answers the start request with `video-started-at`, and earns that
+number rather than guessing it: it waits until ffmpeg is actually writing frames
+before reporting. Spawning ffmpeg and calling that the start would count its own
+warm-up — opening the display, negotiating a pixel format, bringing up the
+encoder — as recorded video that does not exist.
+
+The difference between the two is the **lead**, cut off the front of the audio
+when the browser uploads it. A real take measured 1.449 s. After that the WAV's
+first sample is the video's first frame, with nothing left for anything
+downstream to remember. The tail is padded to the video's exact length, because
+two lanes of different lengths make the timeline ambiguous the moment anything
+is cut from it.
 
 ## Nothing is remembered as an index
 

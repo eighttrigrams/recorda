@@ -114,7 +114,11 @@
      :audio    (:audio all)
      :chosen-screen chosen
      :chosen-mic    mic
-     :ready?   (boolean (and chosen (not (:error chosen)) mic))}))
+     ;; Readiness is about the screen alone now. The microphone is the
+     ;; browser's, because ffmpeg's audio input drops about 11% of what it is
+     ;; given — see et.rec.capture — so what this process can see of the audio
+     ;; devices is informational and no longer decides whether we can record.
+     :ready?   (boolean (and chosen (not (:error chosen))))}))
 
 (defn print-report
   "`make devices`. Reads config.edn for the preferences so that what it prints

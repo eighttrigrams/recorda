@@ -142,7 +142,8 @@
          [lanes]
          [:div.meta-line
           [:span (:width take) "×" (:height take)]
-          [:span (:mic take) " ch" (:mic-channel take)]
-          [:span "mic came up " (js/Math.round (* 1000 (or (:audio-offset take) 0))) " ms late"]
+          [:span "audio: " (or (:audio-source take) "ffmpeg")]
+          [:span "mic led the picture by "
+           (js/Math.round (* 1000 (or (:audio-lead take) (:audio-offset take) 0))) " ms"]
           [:span [:a {:href (str "/media/" id "/audio.wav") :download true} "audio.wav"]]
           [:span [:a {:href (str "/media/" id "/video.mp4") :download true} "video.mp4"]]]]))))
