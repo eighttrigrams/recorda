@@ -90,4 +90,13 @@
     ;; reachable from any page the browser has open is not a loopback problem.
     (if-not (#{"video.mp4" "audio.wav" "peaks.json" "capture.mkv" "ffmpeg.log"} name)
       {:status 404 :body "no such file"}
-      (media/file-response (store/file id name) (get-in req [:headers "range"])))))
+      (media/file-response
+        (store/file id name)
+        (get-in req [:headers "range"])
+        ;; The three derived assets are written once and never touched again,
+        ;; so they cache forever. The capture and the log are neither — one is
+        ;; being appended to while a take runs, the other is a debugging aid
+        ;; you want the current contents of.
+        (if (#{"video.mp4" "audio.wav" "peaks.json"} name)
+          "private, max-age=31536000, immutable"
+          "no-cache")))))

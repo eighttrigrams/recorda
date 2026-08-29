@@ -73,24 +73,32 @@
 
 (defn file-response
   "200 with the whole file, or 206 with the window the client asked for.
+
    Accept-Ranges goes on both — on the 200 especially, since that is the
-   response that tells the browser seeking is possible at all."
-  [^java.io.File f range-header]
-  (if-not (and f (.exists f) (.isFile f))
-    {:status 404 :headers {"Content-Type" "application/json"} :body "{\"error\":\"not found\"}"}
-    (let [len (.length f)
-          ct  (content-type f)]
-      (if-let [[start end] (parse-range range-header len)]
-        {:status  206
-         :headers {"Content-Type"   ct
-                   "Accept-Ranges"  "bytes"
-                   "Content-Range"  (format "bytes %d-%d/%d" start end len)
-                   "Content-Length" (str (inc (- end start)))
-                   "Cache-Control"  "no-cache"}
-         :body    (ranged-stream f start end)}
-        {:status  200
-         :headers {"Content-Type"   ct
-                   "Accept-Ranges"  "bytes"
-                   "Content-Length" (str len)
-                   "Cache-Control"  "no-cache"}
-         :body    (io/input-stream f)}))))
+   response telling the browser that seeking is possible at all.
+
+   `cache` is the Cache-Control to send. A finished take's files are immutable
+   (the id is minted per recording and nothing rewrites them), and saying so
+   matters more than it looks: under no-cache the audio element revalidates on
+   every range request it makes while buffering, and each of those round trips
+   is a chance to stall the decoder."
+  ([^java.io.File f range-header] (file-response f range-header "no-cache"))
+  ([^java.io.File f range-header cache]
+   (if-not (and f (.exists f) (.isFile f))
+     {:status 404 :headers {"Content-Type" "application/json"} :body "{\"error\":\"not found\"}"}
+     (let [len (.length f)
+           ct  (content-type f)]
+       (if-let [[start end] (parse-range range-header len)]
+         {:status  206
+          :headers {"Content-Type"   ct
+                    "Accept-Ranges"  "bytes"
+                    "Content-Range"  (format "bytes %d-%d/%d" start end len)
+                    "Content-Length" (str (inc (- end start)))
+                    "Cache-Control"  cache}
+          :body    (ranged-stream f start end)}
+         {:status  200
+          :headers {"Content-Type"   ct
+                    "Accept-Ranges"  "bytes"
+                    "Content-Length" (str len)
+                    "Cache-Control"  cache}
+          :body    (io/input-stream f)})))))

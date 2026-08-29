@@ -134,13 +134,41 @@ reason and not as a matter of taste.
 
 ## Playing two files as one thing
 
-Two media elements will not stay together on their own, so the video plays
-**muted and authoritative** and the audio follows it, pulled back whenever it
-has slipped more than 80 ms. Tighter and the correction is itself audible as a
-stutter; looser and speech visibly lags the pointer it belongs to.
+Two media elements will not stay together on their own, and the obvious way to
+make them is wrong. **Do not seek the audio to correct drift.** Seeking flushes
+its decoder, the flush stalls it, the stall puts it further behind than it was,
+and being further behind trips the correction again. The first version did
+exactly this: on a seven second take it fired 33 times — five audible stutters
+a second — with a drift trace that climbed to 68 ms and snapped back, over and
+over.
+
+What works is a **rate trim**. The video plays muted and authoritative; the
+audio's `playbackRate` is bent by up to 3% to close the gap. It converges just
+as fast, flushes nothing, and cannot feed itself. Browsers preserve pitch over
+a change that small, so it costs a slightly early or late word rather than a
+detuned one. A hard seek survives only for faults the trim cannot reach —
+past half a second, and never more than once every two.
+
+The other half is **starting them in the right order**. An audio element
+reports `paused false` and resolves its play promise well before a sample
+reaches the device; an external interface has a clock of its own to start. The
+video has no such wait, so starting both together opens every take out of step
+and leaves the trim correcting an offset that never had to exist. So the audio
+leads: play it, watch its own clock until it actually moves, and start the
+picture at that moment — with a one second bound, because an element that never
+starts must not take the picture down with it.
+
+The playhead is moved by writing to the DOM node, not through the state atom.
+Routing it through state re-rendered the whole stage sixty times a second, and
+that main-thread work is itself a source of the glitches this is avoiding.
 
 `space` plays and pauses, the arrows jump five seconds, and clicking either
 lane seeks.
+
+One caveat on how this was checked: the browser automation used here has no
+real audio output — its `AudioContext` clock advances 5 ms in 500 ms of wall
+time — so the numbers above are decoder events and clock traces, not listening.
+The ear is the acceptance test.
 
 ## Ports
 
