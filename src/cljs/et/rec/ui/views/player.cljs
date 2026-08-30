@@ -517,7 +517,9 @@
                        :on-double-click #(split-here! take %)
                        :on-context-menu #(open-piece-menu! take %)}
        (if peaks
-         [waveform (:peaks peaks)]
+         ;; Drawn at the voice level, so the slider above shows its effect
+         ;; here rather than only in the exported file.
+         [waveform (:peaks peaks) (double (or (:voice-gain take) 1.0))]
          [:div.empty {:style {:padding "8px"}} "reading waveform…"])
        [piece-highlight take]]]
      [audio-lane take dur :music "Music" "drop an audio file here, or press +"]
