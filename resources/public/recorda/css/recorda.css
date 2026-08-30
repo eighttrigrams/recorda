@@ -181,3 +181,18 @@ body { max-width: 1600px; }
 }
 .project-head .spacer { flex: 1 1 auto; }
 .transport .spacer { flex: 1 1 auto; }
+
+/* --- the recording area ---------------------------------------------------
+   Drawn over the picture, in the picture's own coordinates. It is an export
+   setting, so it never changes what is on disk. */
+
+.video-wrap { position: relative; }
+.crop-layer { position: absolute; inset: 0; }  /* replaced below by measured geometry */
+.crop-layer.drawing { cursor: crosshair; background: rgba(0,0,0,0.28); }
+.crop-box {
+  position: absolute;
+  border: 1.5px solid var(--record);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+}
+.crop-box.set { border-style: dashed; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.30); }

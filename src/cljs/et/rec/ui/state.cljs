@@ -170,6 +170,19 @@
   (api/PUT (str "/api/recordings/" id) {:title title}
            (fn [_] (fetch-recordings!))))
 
+(defn set-crop!
+  "The area of the video to keep, in the video's own pixels. Applied on export,
+   so this can be redrawn at any time and costs nothing until you export."
+  [id c]
+  (api/PUT (str "/api/recordings/" id "/crop") c
+           (fn [_] (fetch-recordings!))
+           #(swap! app assoc :error (or (get-in % [:response :error]) "could not set the area"))))
+
+(defn clear-crop! [id]
+  (api/PUT (str "/api/recordings/" id "/crop") {}
+           (fn [_] (fetch-recordings!))
+           #(swap! app assoc :error "could not clear the area")))
+
 (defn export!
   "Mux a take into one mp4 and hand it straight to the browser's downloads.
 

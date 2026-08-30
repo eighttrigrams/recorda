@@ -18,6 +18,20 @@
 (defonce ^:private video-el (atom nil))
 (defonce ^:private playhead-el (atom nil))
 
+;; Drawing a recording area. Kept local to the view because it is a gesture,
+;; not state anything else needs — the result is sent to the server and comes
+;; back on the project.
+(defonce ^:private crop-mode (r/atom false))
+(defonce ^:private crop-drag (r/atom nil))
+
+;; Bumped whenever the video's laid-out size could have changed. The overlay
+;; reads the element's real geometry, and nothing else would make it re-render
+;; when metadata arrives or the window is dragged — so the box would be drawn
+;; from a videoWidth of 0 and never corrected.
+(defonce ^:private video-tick (r/atom 0))
+(defonce ^:private _resize
+  (.addEventListener js/window "resize" #(swap! video-tick inc)))
+
 (def ^:private video-deadband
   "Video drift below this is left alone. The eye does not find a screencast's
    pointer forty milliseconds early."
@@ -113,6 +127,79 @@
          [:div.empty {:style {:padding "8px"}} "reading waveform…"])]]
      [:div.playhead {:ref #(reset! playhead-el %) :style {:left "58px"}}]]))
 
+(defn- video-geometry
+  "Where the picture actually sits inside its container, and how many video
+   pixels one CSS pixel of it covers.
+
+   Read from the element rather than assumed: the video is width:100% but also
+   max-height limited, so on a short window it is letterboxed and an overlay
+   pinned to the container would not line up with the image."
+  []
+  (when-let [v @video-el]
+    (let [w (.-clientWidth v) h (.-clientHeight v) vw (.-videoWidth v)]
+      (when (and (pos? w) (pos? h) (pos? vw))
+        {:left (.-offsetLeft v) :top (.-offsetTop v)
+         :w w :h h :scale (/ vw w)}))))
+
+(defn- rect-from-drag [{:keys [x0 y0 x1 y1]} scale]
+  (let [x (min x0 x1) y (min y0 y1)
+        w (js/Math.abs (- x1 x0)) h (js/Math.abs (- y1 y0))]
+    {:x (js/Math.round (* x scale)) :y (js/Math.round (* y scale))
+     :w (js/Math.round (* w scale)) :h (js/Math.round (* h scale))}))
+
+(defn- crop-overlay
+  "The area box, drawn over the picture.
+
+   Drawn on the footage rather than on a still of the screen, because the crop
+   is an export setting: what you want to frame is what you actually recorded,
+   and you can change your mind about it afterwards."
+  [take]
+  (let [_    @video-tick                     ; re-render when the picture moves
+        crop (:crop take)
+        g    (video-geometry)
+        inv  (when g (/ 1 (:scale g)))
+        d    @crop-drag]
+    [:div.crop-layer
+     {:class (when @crop-mode "drawing")
+      :style (when g {:left (:left g) :top (:top g)
+                      :width (:w g) :height (:h g)})
+      :on-mouse-down
+      (fn [e]
+        (when @crop-mode
+          (let [r (.getBoundingClientRect (.-currentTarget e))]
+            (reset! crop-drag {:x0 (- (.-clientX e) (.-left r))
+                               :y0 (- (.-clientY e) (.-top r))
+                               :x1 (- (.-clientX e) (.-left r))
+                               :y1 (- (.-clientY e) (.-top r))}))))
+      :on-mouse-move
+      (fn [e]
+        (when (and @crop-mode @crop-drag)
+          (let [r (.getBoundingClientRect (.-currentTarget e))]
+            (swap! crop-drag assoc
+                   :x1 (- (.-clientX e) (.-left r))
+                   :y1 (- (.-clientY e) (.-top r))))))
+      :on-mouse-up
+      (fn [_]
+        (when-let [dr @crop-drag]
+          (reset! crop-drag nil)
+          (reset! crop-mode false)
+          (when-let [g (video-geometry)]
+            (let [c (rect-from-drag dr (:scale g))]
+              ;; A stray click is not an area. Anything this small is a misfire.
+              (when (and (> (:w c) 24) (> (:h c) 24))
+                (state/set-crop! (:id take) c))))))}
+     ;; the box being dragged right now
+     (when d
+       (let [x (min (:x0 d) (:x1 d)) y (min (:y0 d) (:y1 d))
+             w (js/Math.abs (- (:x1 d) (:x0 d))) h (js/Math.abs (- (:y1 d) (:y0 d)))]
+         [:div.crop-box {:style {:left x :top y :width w :height h}}]))
+     ;; the area already set, drawn back in element coordinates
+     (when (and crop inv (not d))
+       [:div.crop-box.set {:style {:left   (* (:x crop) inv)
+                                   :top    (* (:y crop) inv)
+                                   :width  (* (:w crop) inv)
+                                   :height (* (:h crop) inv)}}])]))
+
 (defn- trimmed? [take]
   (boolean (some #(or (:out %) (:dropped %)) (:segments take))))
 
@@ -152,7 +239,9 @@
                       :src     (str "/media/" id "/video.mp4?v=" ver)
                       :muted   true
                       :preload "auto"
-                      :on-click (fn [_] (toggle!))}]]
+                      :on-loaded-metadata (fn [_] (swap! video-tick inc))
+                      :on-click (fn [_] (when-not @crop-mode (toggle!)))}]
+             [crop-overlay take]]
             [:div.transport
              [:button {:on-click (fn [_] (toggle!)) :disabled (not ready?)}
               (cond (:loading? estate) "Decoding…"
@@ -174,6 +263,12 @@
                                 :disabled (state/busy?)
                                 :title "Put every trim and every dropped sitting back"}
                 "undo trim"])
+             [:button {:class (when @crop-mode "recording")
+                       :on-click (fn [_] (swap! crop-mode not) (reset! crop-drag nil))
+                       :title "Drag a box on the picture; the export is cropped to it"}
+              (if @crop-mode "drawing — drag a box" "Crop area")]
+             (when (:crop take)
+               [:button.danger {:on-click (fn [_] (state/clear-crop! id))} "full frame"])
              [:button {:on-click (fn [_] (state/export! id))
                        :disabled (:exporting? @state/app)}
               (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
@@ -182,6 +277,8 @@
              [:span (:width take) "×" (:height take)]
              (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))]
                [:span (if (= 1 live) "one sitting" (str live " sittings"))])
+             (when-let [c (:crop take)]
+               [:span "crop " (:w c) "×" (:h c) " — applied on export"])
              (when-let [db (:peak-dbfs take)]
                [:span {:style (when (< db -30) {:color "var(--record)"})}
                 "peak " (js/Math.round db) " dBFS"

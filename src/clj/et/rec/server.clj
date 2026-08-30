@@ -55,6 +55,7 @@
     ;; alone, so the body arrives here as the stream it was sent as.
     (POST   "/recordings/:id/record/start"   [] h/start-handler)
     (POST   "/recordings/:id/segments/:n/audio" [] h/upload-audio-handler)
+    (PUT    "/recordings/:id/crop"   [] h/set-crop-handler)
     (POST   "/recordings/:id/trim"   [] h/trim-handler)
     (POST   "/recordings/:id/untrim" [] h/untrim-handler)
     (POST   "/recordings/:id/export" [] h/export-handler)))

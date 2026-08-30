@@ -225,6 +225,30 @@ after the suite, prober on 3180 and remote-files-organizer on 3190. Declared in
 `config.edn` and `shadow-cljs.edn`, which is the single source; `config.edn`
 itself is gitignored and made from `config.edn.template` on first start.
 
+## Cropping
+
+**Crop area** lets you drag a box on the picture; the export is cropped to it.
+**full frame** clears it.
+
+The box is drawn **on the footage**, not on a preview of the screen, and it is
+applied **on export**, not during capture. Both follow from the same choice.
+
+Cropping during capture would be free — the frames are being encoded anyway —
+and that is exactly why it is the wrong place. It would bake the decision in
+before a single frame had been seen, and nothing could change it afterwards but
+recording again. As an export setting the box stays a number: redraw it, clear
+it, change your mind a week later. The same reason a trim is a number rather
+than a deletion.
+
+The price is that a cropped export re-encodes the video, where an uncropped one
+stream-copies it. Only the export pays it, and the bitrate is scaled by how much
+of the frame survives so a corner of the screen does not get a full-screen
+budget.
+
+Both dimensions are forced even. h264 in 4:2:0 stores chroma at half resolution
+in each direction, so an odd width has no valid chroma plane — the encoder
+either refuses or silently rounds, and silently is worse.
+
 ## Export
 
 `Export mp4` in the player mixes the two tracks back into one file and hands it

@@ -11,6 +11,7 @@
             [et.rec.devices :as devices]
             [et.rec.assemble :as assemble]
             [et.rec.export :as export]
+            [et.rec.ff :as ff]
             [et.rec.media :as media]
             [et.rec.split :as split]
             [et.rec.store :as store]))
@@ -169,6 +170,37 @@
         (if (:ok? r)
           (ok (assoc r :url (str "/media/" id "/export.mp4")))
           (bad r))))))
+
+(defn set-crop-handler
+  "PUT /api/recordings/:id/crop — the area of the video to keep, as
+  {:x :y :w :h} in the video's own pixels. An empty body clears it.
+
+  **Settable at any time, and changeable at any time**, because the crop is
+  applied on export rather than during capture. You draw it on the footage you
+  actually recorded, and redrawing it costs nothing until you export again."
+  [req]
+  (let [id   (get-in req [:params :id])
+        body (:body req)
+        m    (store/read-meta id)]
+    (cond
+      (nil? m)
+      {:status 404 :body {:error "no such project"}}
+
+      (nil? (:w body))
+      (do (store/update-meta! id dissoc :crop)
+          (ok (store/read-meta id)))
+
+      :else
+      (let [video (store/file id "video.mp4")
+            vw    (or (some-> (ff/probe video "v:0" "stream=width") parse-long)
+                      (:width m))
+            vh    (or (some-> (ff/probe video "v:0" "stream=height") parse-long)
+                      (:height m))]
+        (if-not (and vw vh)
+          (bad {:error "record something first — the area is drawn on the video"})
+          (let [c (export/normalise-crop body vw vh)]
+            (store/update-meta! id assoc :crop c)
+            (ok (store/read-meta id))))))))
 
 (defn media-handler
   "GET /media/:id/:name — a take's own files, with Range support so the video
