@@ -128,18 +128,36 @@
      [:div.playhead {:ref #(reset! playhead-el %) :style {:left "58px"}}]]))
 
 (defn- video-geometry
-  "Where the picture actually sits inside its container, and how many video
-   pixels one CSS pixel of it covers.
+  "Where the picture is actually painted, and how many video pixels one CSS
+   pixel of it covers.
 
-   Read from the element rather than assumed: the video is width:100% but also
-   max-height limited, so on a short window it is letterboxed and an overlay
-   pinned to the container would not line up with the image."
+   **Not the element's box.** A <video> letterboxes its picture inside its box
+   (object-fit: contain), so whenever the element's aspect ratio differs from
+   the footage's, the image is smaller than the element and offset within it.
+   Measured here: a 2560x1440 recording in an 1144x589 element paints as
+   1047x589, inset 48.4px from the left. Mapping a gesture through the
+   element's width instead of the picture's was 8.5% out.
+
+   The two errors — too small a scale, and a missing offset — cancel at the
+   centre and grow toward the edges, so a box drawn near the middle came back
+   very slightly too tight on every side. That is a hard thing to see and an
+   easy thing to dismiss.
+
+   Returned in the container's coordinates so the overlay can be laid directly
+   on the picture, which also stops you drawing on the letterbox bars."
   []
   (when-let [v @video-el]
-    (let [w (.-clientWidth v) h (.-clientHeight v) vw (.-videoWidth v)]
-      (when (and (pos? w) (pos? h) (pos? vw))
-        {:left (.-offsetLeft v) :top (.-offsetTop v)
-         :w w :h h :scale (/ vw w)}))))
+    (let [elw (.-clientWidth v)  elh (.-clientHeight v)
+          vw  (.-videoWidth v)   vh  (.-videoHeight v)]
+      (when (and (pos? elw) (pos? elh) (pos? vw) (pos? vh))
+        (let [k    (min (/ elw vw) (/ elh vh))   ; css px per video px
+              picw (* vw k)
+              pich (* vh k)]
+          {:left  (+ (.-offsetLeft v) (/ (- elw picw) 2))
+           :top   (+ (.-offsetTop v)  (/ (- elh pich) 2))
+           :w     picw
+           :h     pich
+           :scale (/ 1 k)})))))                  ; video px per css px
 
 (defn- rect-from-drag [{:keys [x0 y0 x1 y1]} scale]
   (let [x (min x0 x1) y (min y0 y1)
