@@ -273,8 +273,7 @@
       (let [[before _ _] (split-arrangement id spans (max 0.05 (double at)) false)]
         (if (empty? before)
           {:ok? false :error "that would leave nothing"}
-          (do (store/push-history! id true)
-              (store/set-clips! id before)
+          (do (store/set-clips! id before)
               (assemble! id)))))))
 
 (defn place!
@@ -298,37 +297,44 @@
     (case mode
       :at-playhead
       (let [[before after _] (split-arrangement id spans at true)]
-        (store/push-history! id true)
         (store/set-clips! id (vec (concat before [fresh] after))))
 
       ;; Append. Nothing to arrange unless an arrangement already exists — and
       ;; then it does have to be said, because the derived reading is no longer
       ;; in play and the new sitting would otherwise never be mentioned.
       (when (seq (:clips (store/read-meta id)))
-        (store/push-history! id true)
         (store/set-clips! id (conj (mapv store/strip-clip spans) fresh))))))
 
-(defn- coalesce
-  "Adjacent pieces of the same sitting that meet end to start are one piece.
+(defn- addition?
+  "Whether the boundary between two pieces is one somebody put there, rather
+   than a place where the material genuinely changes.
 
-   This is what makes deleting an insertion leave no trace. Recording into the
-   middle of a sitting cuts it in two; take the inserted piece away again and
-   the two halves are once more continuous material with a pointless cut
-   between them. Rejoining them removes a seam that would otherwise mark a join
-   where nothing is joined."
-  [id cs]
-  (reduce (fn [acc c]
-            (let [p (peek acc)]
-              (if (and p (= (:seg p) (:seg c))
-                       (< (Math/abs (- (double (:out p)) (double (:in c)))) 1.0e-3))
-                (let [d (double (or (store/segment-duration id (:seg p)) 0.0))
-                      m (assoc p :out (:out c))]
-                  (conj (pop acc)
-                        (assoc m :whole? (and (< (double (:in m)) 0.001)
-                                              (> (double (:out m)) (- d 0.001))))))
-                (conj acc c))))
-          []
-          cs))
+   Two pieces of the *same* sitting meeting end to start are continuous
+   material with a mark drawn on it, and taking the mark away restores what was
+   always true. Two different sittings meeting is not a mark at all — it is the
+   join, and there is nothing to restore it to."
+  [a b]
+  (and (= (:seg a) (:seg b))
+       (< (Math/abs (- (double (:out a)) (double (:in b)))) 1.0e-3)))
+
+(defn- merge-pair
+  "The arrangement with pieces `j` and `j+1` made one.
+
+   **Only that pair.** An earlier version merged every contiguous pair in the
+   arrangement at once, which meant deleting a single piece silently swallowed
+   every other marker in the project — measured: fourteen pieces down to five,
+   nine marks the user had placed on purpose gone in one press. A marker is a
+   handle somebody put there deliberately; nothing but an instruction about
+   that marker should remove it."
+  [id cs j]
+  (let [a (nth cs j)
+        b (nth cs (inc j))
+        d (double (or (store/segment-duration id (:seg a)) 0.0))
+        m (assoc a :out (:out b))]
+    (vec (concat (take j cs)
+                 [(assoc m :whole? (and (< (double (:in m)) 0.001)
+                                        (> (double (:out m)) (- d 0.001))))]
+                 (drop (+ j 2) cs)))))
 
 (defn- plain?
   "Whether an arrangement says exactly what no arrangement would say: every
@@ -357,8 +363,17 @@
       {:ok? false :error "that is the only piece there is"}
 
       :else
-      (let [kept (coalesce id (vec (concat (take i cs) (drop (inc i) cs))))]
-        (store/push-history! id true)
+      (let [rest (vec (concat (take i cs) (drop (inc i) cs)))
+            ;; The one join this deletion created: what was before the piece now
+            ;; meets what was after it. If those are two halves of one sitting
+            ;; they are continuous again, and the mark between them should go —
+            ;; which is what makes deleting an insertion leave no trace. No
+            ;; other marker is touched.
+            j    (dec i)
+            kept (if (and (>= j 0) (< (inc j) (count rest))
+                          (addition? (nth rest j) (nth rest (inc j))))
+                   (merge-pair id rest j)
+                   rest)]
         (if (plain? id kept)
           (store/clear-clips! id)
           (store/set-clips! id (mapv store/strip-clip kept)))
@@ -388,8 +403,7 @@
       (let [[before after landed] (split-arrangement id spans at true)]
         (if (or (empty? before) (empty? after))
           {:ok? false :error "that is already an end"}
-          (do (store/push-history! id false)
-              (store/set-clips! id (vec (concat before after)))
+          (do (store/set-clips! id (vec (concat before after)))
               ;; **No rebuild.** A marker does not change what plays, so the
               ;; files it would produce are the files already on disk — proven,
               ;; not assumed: nine pieces and six markers assemble to 962
@@ -401,18 +415,6 @@
               ;; It also left `:rev` alone, so the browser does not re-decode
               ;; the audio or blank the waveform either.
               {:ok? true :at landed :duration (:duration (store/read-meta id))}))))))
-
-(defn- addition?
-  "Whether a marker is one somebody put there, rather than a place where the
-   material genuinely changes.
-
-   Two pieces of the *same* sitting meeting end to start are continuous
-   material with a mark drawn on it, and taking the mark away restores what was
-   always true. Two different sittings meeting is not a mark at all — it is the
-   join, and there is nothing to restore it to."
-  [a b]
-  (and (= (:seg a) (:seg b))
-       (< (Math/abs (- (double (:out a)) (double (:in b)))) 1.0e-3)))
 
 (defn delete-seam!
   "Remove one marker, so the two pieces either side of it become one again."
@@ -426,14 +428,7 @@
       {:ok? false :error "that is where two sittings meet, not a marker — delete a piece instead"}
 
       :else
-      (let [a      (nth cs i)
-            b      (nth cs (inc i))
-            d      (double (or (store/segment-duration id (:seg a)) 0.0))
-            merged (let [m (assoc a :out (:out b))]
-                     (assoc m :whole? (and (< (double (:in m)) 0.001)
-                                           (> (double (:out m)) (- d 0.001)))))
-            kept   (vec (concat (take i cs) [merged] (drop (+ i 2) cs)))]
-        (store/push-history! id false)
+      (let [kept (merge-pair id cs i)]
         (if (plain? id kept)
           (store/clear-clips! id)
           (store/set-clips! id (mapv store/strip-clip kept)))
@@ -441,20 +436,3 @@
         ;; added can be removed, and those are the ones either side of which
         ;; the material is continuous. Taking one away leaves the same video.
         {:ok? true :duration (:duration (store/read-meta id))}))))
-
-(defn undo!
-  "Step back one change to the arrangement.
-
-   Real undo, one press per change: a trim, a marker, a deleted piece, a
-   sitting recorded into the middle. Not a reset — `reset!` below is that, and
-   it is a different thing worth a different button.
-
-   Stepping back over a marker costs no ffmpeg, for the same reason putting one
-   down costs none: it did not change what plays, so there is nothing to
-   rebuild."
-  [id]
-  (if-let [e (store/pop-history! id)]
-    (if (:media? e)
-      (assemble! id)
-      {:ok? true :duration (:duration (store/read-meta id))})
-    {:ok? false :error "nothing to undo"}))

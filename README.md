@@ -184,20 +184,16 @@ reversible, but a half-done operation is still a bad thing to be handed.
 **Trim to playhead** is the other half of that: park the playhead, press it, and
 the video stops there. Then record, and the take carries on from where you cut.
 
-**Undo** steps back one change: a trim, a marker, a deleted piece, a sitting
-recorded into the middle. One press per change, and the button says how many
-are left.
+**There is no undo.** Every destructive control asks twice instead — you open a
+menu on the thing itself and then confirm — which is the guard that fits a
+single-user app doing one thing at a time. An undo stack was built here and
+taken out again: it was a second model of the project's history to keep correct,
+earning its place only in the moment between a wrong click and noticing, and the
+confirm already occupies that moment.
 
-There is deliberately **no button that throws every edit away at once.** There
-was, briefly, and it was called `undo edits` while being nothing of the kind —
-one press and every trim, marker and deletion went, with an inserted sitting
-sent back to the end. A control that blunt is one you press by accident and
-cannot take back in kind.
-
-Undo is possible at all for the reason everything here is: editing only ever
-writes an arrangement over the sittings and never touches a file, so every state
-it can step back to is one the files can still produce. The history lives in
-`meta.edn` and survives a reload.
+Nothing leaves the disk either way. Deleting a piece stops it being played; the
+sitting behind it stays whole in `segments/`, so the material is still there
+even when the arrangement no longer mentions it.
 
 ## What a copy can and cannot do
 
@@ -269,7 +265,7 @@ weld unrelated material together. The two are drawn differently and the menu
 says which is which.
 
 Deleting a piece leaves nothing behind: the sitting behind it stays whole on
-disk, so a wrong one costs one press of undo. If taking a piece out leaves two
+disk. If taking a piece out leaves two
 halves of one sitting meeting end to start they are rejoined, and if what
 remains is every sitting whole and in order the arrangement is dropped
 altogether — **deleting an insertion leaves the project as though it never

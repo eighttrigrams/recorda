@@ -444,16 +444,6 @@
                                    :width  (* (:w crop) inv)
                                    :height (* (:h crop) inv)}}])]))
 
-(defn- undoable?
-  "Whether there is a change to step back over.
-
-   Read off the recorded history rather than off the arrangement, because those
-   are different questions: a project can have been edited and then edited back
-   to plain, and pressing undo there should still walk further back rather than
-   the button disappearing under the pointer."
-  [take]
-  (boolean (seq (:history take))))
-
 (defn player
   "The project pane: what this video is, and everything you do to it.
 
@@ -511,12 +501,6 @@
                        :disabled (or (state/busy?) (< (:time @state/app) 0.1))
                        :title "Cut everything after the playhead; the next recording carries on from here"}
               "Trim to playhead"]
-             (when (undoable? take)
-               [:button {:on-click (fn [_] (state/undo! id))
-                         :disabled (state/busy?)
-                         :title (str "Step back one change — " (count (:history take))
-                                     " to go. Nothing was ever deleted from disk, so every step back is one the files can still produce.")}
-                "undo"])
              [:button {:class (when @crop-mode "recording")
                        :on-click (fn [_] (swap! crop-mode not) (reset! crop-drag nil))
                        :title "Drag a box on the picture; the export is cropped to it"}

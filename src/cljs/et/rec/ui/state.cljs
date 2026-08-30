@@ -141,20 +141,6 @@
             (fn [_] (fetch-recordings!) (select! id))
             #(swap! app assoc :error (or (get-in % [:response :error]) "could not trim"))))
 
-(defn undo!
-  "Step back one change to the open project's arrangement.
-
-   One press per change — a trim, a marker, a deleted piece, a sitting recorded
-   into the middle. There is deliberately no button that throws every edit away
-   at once: a control that blunt is one you press by accident and cannot take
-   back in kind."
-  [id]
-  (swap! app assoc :error nil)
-  (api/POST (str "/api/recordings/" id "/undo")
-            (fn [_] (fetch-recordings!) (select! id))
-            #(swap! app assoc :error (or (get-in % [:response :error])
-                                         "nothing to undo"))))
-
 (defn start!
   "Record another sitting onto the open project.
 
