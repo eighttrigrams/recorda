@@ -274,7 +274,12 @@ body { max-width: 1600px; }
   pointer-events: none; z-index: 1;
 }
 .piece-menu {
-  position: fixed; z-index: 50; min-width: 220px;
+  /* Absolute inside .lanes, and lifted so its bottom edge sits just above the
+     pointer — a menu that covers the thing it is about is a menu you have to
+     move to read. Fixed positioning is wrong here: the panel's backdrop-filter
+     makes it the containing block, so viewport coordinates land a panel away. */
+  position: absolute; transform: translate(-50%, -100%);
+  z-index: 50; min-width: 220px;
   background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--glass-border); border-radius: 10px;
   box-shadow: var(--glass-shadow); padding: 8px;

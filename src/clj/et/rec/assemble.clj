@@ -273,7 +273,8 @@
       (let [[before _ _] (split-arrangement id spans (max 0.05 (double at)) false)]
         (if (empty? before)
           {:ok? false :error "that would leave nothing"}
-          (do (store/set-clips! id before)
+          (do (store/push-history! id true)
+              (store/set-clips! id before)
               (assemble! id)))))))
 
 (defn place!
@@ -297,12 +298,14 @@
     (case mode
       :at-playhead
       (let [[before after _] (split-arrangement id spans at true)]
+        (store/push-history! id true)
         (store/set-clips! id (vec (concat before [fresh] after))))
 
       ;; Append. Nothing to arrange unless an arrangement already exists — and
       ;; then it does have to be said, because the derived reading is no longer
       ;; in play and the new sitting would otherwise never be mentioned.
       (when (seq (:clips (store/read-meta id)))
+        (store/push-history! id true)
         (store/set-clips! id (conj (mapv store/strip-clip spans) fresh))))))
 
 (defn- coalesce
@@ -355,6 +358,7 @@
 
       :else
       (let [kept (coalesce id (vec (concat (take i cs) (drop (inc i) cs))))]
+        (store/push-history! id true)
         (if (plain? id kept)
           (store/clear-clips! id)
           (store/set-clips! id (mapv store/strip-clip kept)))
@@ -372,7 +376,11 @@
    second piece has to resume from it. Splitting and rejoining at a keyframe is
    exact: measured on a real recording, same duration, same frame count, and
    the audio subtracts to silence. So a project can carry any number of markers
-   and still be the recording that came off the screen."
+   and still be the recording that came off the screen.
+
+   That exactness is also why **nothing is rebuilt here**. The assembly a
+   marker would produce is the assembly already on disk, so running ffmpeg over
+   it would spend a second to write the same file back."
   [id at]
   (let [spans (store/clip-span id)]
     (if (empty? spans)
@@ -380,8 +388,19 @@
       (let [[before after landed] (split-arrangement id spans at true)]
         (if (or (empty? before) (empty? after))
           {:ok? false :error "that is already an end"}
-          (do (store/set-clips! id (vec (concat before after)))
-              (assoc (assemble! id) :at landed)))))))
+          (do (store/push-history! id false)
+              (store/set-clips! id (vec (concat before after)))
+              ;; **No rebuild.** A marker does not change what plays, so the
+              ;; files it would produce are the files already on disk — proven,
+              ;; not assumed: nine pieces and six markers assemble to 962
+              ;; frames, exactly what the unmarked original has, and the audio
+              ;; subtracts to silence.
+              ;;
+              ;; Rebuilding anyway cost a second of ffmpeg for a no-op, which
+              ;; is the whole delay between double-clicking and seeing a mark.
+              ;; It also left `:rev` alone, so the browser does not re-decode
+              ;; the audio or blank the waveform either.
+              {:ok? true :at landed :duration (:duration (store/read-meta id))}))))))
 
 (defn- addition?
   "Whether a marker is one somebody put there, rather than a place where the
@@ -414,16 +433,28 @@
                      (assoc m :whole? (and (< (double (:in m)) 0.001)
                                            (> (double (:out m)) (- d 0.001)))))
             kept   (vec (concat (take i cs) [merged] (drop (+ i 2) cs)))]
+        (store/push-history! id false)
         (if (plain? id kept)
           (store/clear-clips! id)
           (store/set-clips! id (mapv store/strip-clip kept)))
-        (assemble! id)))))
+        ;; No rebuild, for the reason `split-at!` gives: only a marker somebody
+        ;; added can be removed, and those are the ones either side of which
+        ;; the material is continuous. Taking one away leaves the same video.
+        {:ok? true :duration (:duration (store/read-meta id))}))))
 
-(defn untrim!
-  "Back to plain appended segments: every edit cleared, every sitting back, in
-   the order they were recorded. Possible because editing only ever wrote an
-   arrangement — a sitting recorded into the middle is not lost by this, it goes
-   back to being the last one."
+(defn undo!
+  "Step back one change to the arrangement.
+
+   Real undo, one press per change: a trim, a marker, a deleted piece, a
+   sitting recorded into the middle. Not a reset — `reset!` below is that, and
+   it is a different thing worth a different button.
+
+   Stepping back over a marker costs no ffmpeg, for the same reason putting one
+   down costs none: it did not change what plays, so there is nothing to
+   rebuild."
   [id]
-  (store/clear-clips! id)
-  (assemble! id))
+  (if-let [e (store/pop-history! id)]
+    (if (:media? e)
+      (assemble! id)
+      {:ok? true :duration (:duration (store/read-meta id))})
+    {:ok? false :error "nothing to undo"}))

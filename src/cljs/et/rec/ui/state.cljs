@@ -141,14 +141,19 @@
             (fn [_] (fetch-recordings!) (select! id))
             #(swap! app assoc :error (or (get-in % [:response :error]) "could not trim"))))
 
-(defn untrim!
-  "Clear every edit: back to plain appended sittings, in the order they were
-   recorded. A sitting recorded into the middle goes back to being the last one
-   — it is not lost, because nothing ever moved but the arrangement."
+(defn undo!
+  "Step back one change to the open project's arrangement.
+
+   One press per change — a trim, a marker, a deleted piece, a sitting recorded
+   into the middle. There is deliberately no button that throws every edit away
+   at once: a control that blunt is one you press by accident and cannot take
+   back in kind."
   [id]
-  (api/POST (str "/api/recordings/" id "/untrim")
+  (swap! app assoc :error nil)
+  (api/POST (str "/api/recordings/" id "/undo")
             (fn [_] (fetch-recordings!) (select! id))
-            #(swap! app assoc :error (or (get-in % [:response :error]) "could not undo the trim"))))
+            #(swap! app assoc :error (or (get-in % [:response :error])
+                                         "nothing to undo"))))
 
 (defn start!
   "Record another sitting onto the open project.
@@ -242,7 +247,10 @@
   [id at]
   (swap! app assoc :error nil)
   (api/POST (str "/api/recordings/" id "/split?at=" at)
-            (fn [_] (fetch-recordings!) (select! id))
+            ;; `fetch-recordings!` and not `select!`: the media has not changed,
+            ;; so re-selecting would blank the waveform and re-decode the audio
+            ;; to arrive at exactly what is already loaded.
+            (fn [_] (fetch-recordings!))
             #(swap! app assoc :error (or (get-in % [:response :error])
                                          "could not put a marker there"))))
 
@@ -251,7 +259,8 @@
   [id i]
   (swap! app assoc :error nil)
   (api/DELETE (str "/api/recordings/" id "/seams/" i)
-              (fn [_] (fetch-recordings!) (select! id))
+              ;; No re-select, for the reason `split-at!` gives.
+              (fn [_] (fetch-recordings!))
               #(swap! app assoc :error (or (get-in % [:response :error])
                                            "could not remove that marker"))))
 

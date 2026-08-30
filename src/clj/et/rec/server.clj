@@ -58,7 +58,7 @@
     (POST   "/recordings/:id/segments/:n/audio" [] h/upload-audio-handler)
     (PUT    "/recordings/:id/crop"   [] h/set-crop-handler)
     (POST   "/recordings/:id/trim"   [] h/trim-handler)
-    (POST   "/recordings/:id/untrim" [] h/untrim-handler)
+    (POST   "/recordings/:id/undo"   [] h/undo-handler)
     (POST   "/recordings/:id/export" [] h/export-handler)
     (POST   "/recordings/:id/split"    [] h/split-handler)
     (DELETE "/recordings/:id/clips/:i" [] h/delete-clip-handler)

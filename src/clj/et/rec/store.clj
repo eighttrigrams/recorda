@@ -161,6 +161,57 @@
                          (dissoc :clips)
                          (update :segments (fn [ss] (mapv #(dissoc % :out :dropped) ss)))))))
 
+(def ^:private history-depth
+  "How many arrangements back you can step. An arrangement is a handful of
+   small maps, so the whole history of a heavily edited project is smaller than
+   one frame of its video — there is no reason to be stingy, and none to be
+   unbounded either."
+  50)
+
+(defn push-history!
+  "Record the arrangement as it stands, before something changes it.
+
+   `media?` says whether the change about to happen alters what plays. Markers
+   do not, so stepping back over one costs no ffmpeg — the same reason putting
+   one down costs none.
+
+   The per-segment `:out` and `:dropped` go in too. They are how a trim was
+   written before `:clips` existed and the first arrangement clears them, so
+   without this the one step back across that boundary would lose the trim."
+  [id media?]
+  (update-meta! id
+                (fn [m]
+                  (update m :history
+                          (fn [h]
+                            (vec (take-last history-depth
+                                            (conj (vec h)
+                                                  {:clips  (:clips m)
+                                                   :cuts   (mapv #(select-keys % [:n :out :dropped])
+                                                                 (:segments m))
+                                                   :media? (boolean media?)}))))))))
+
+(defn pop-history!
+  "Put the last recorded arrangement back, and answer the entry so the caller
+   knows whether anything has to be rebuilt."
+  [id]
+  (let [m (read-meta id)
+        h (vec (:history m))]
+    (when (seq h)
+      (let [e    (peek h)
+            cuts (into {} (map (juxt :n identity)) (:cuts e))]
+        (write-meta!
+          id
+          (cond-> (assoc m :history (pop h))
+            true          (update :segments
+                                  (fn [ss]
+                                    (mapv (fn [seg]
+                                            (merge (dissoc seg :out :dropped)
+                                                   (dissoc (get cuts (:n seg)) :n)))
+                                          ss)))
+            (:clips e)    (assoc :clips (:clips e))
+            (nil? (:clips e)) (dissoc :clips)))
+        e))))
+
 (defn clip-span
   "Each clip with the assembly time it starts at and its length, so a position
    on the timeline can be resolved to a place inside a segment."

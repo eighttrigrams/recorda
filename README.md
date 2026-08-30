@@ -184,9 +184,20 @@ reversible, but a half-done operation is still a bad thing to be handed.
 **Trim to playhead** is the other half of that: park the playhead, press it, and
 the video stops there. Then record, and the take carries on from where you cut.
 
-`undo edits` clears the arrangement and puts the project back to plain appended
-sittings in the order they were recorded. A sitting recorded into the middle is
-not lost by that — it goes back to being the last one.
+**Undo** steps back one change: a trim, a marker, a deleted piece, a sitting
+recorded into the middle. One press per change, and the button says how many
+are left.
+
+There is deliberately **no button that throws every edit away at once.** There
+was, briefly, and it was called `undo edits` while being nothing of the kind —
+one press and every trim, marker and deletion went, with an inserted sitting
+sent back to the end. A control that blunt is one you press by accident and
+cannot take back in kind.
+
+Undo is possible at all for the reason everything here is: editing only ever
+writes an arrangement over the sittings and never touches a file, so every state
+it can step back to is one the files can still produce. The history lives in
+`meta.edn` and survives a reload.
 
 ## What a copy can and cannot do
 
@@ -237,7 +248,10 @@ visible.
 
 - **Double-click a lane** to put a marker there. It changes nothing about what
   plays — it only cuts one piece into two, so that there is something to take
-  hold of.
+  hold of. **Nothing is rebuilt for it either**, which is what makes it appear
+  as fast as you can click: the assembly a marker would produce is the assembly
+  already on disk, so running ffmpeg over it would spend a second writing the
+  same file back. The same goes for taking one away.
 - **Right-click a piece** for its menu: how long it is, which sitting it came
   from, and *delete*. The piece is shaded while the menu is open, because with
   two markers close together the pointer alone does not say which one will go.
@@ -255,7 +269,7 @@ weld unrelated material together. The two are drawn differently and the menu
 says which is which.
 
 Deleting a piece leaves nothing behind: the sitting behind it stays whole on
-disk, so a wrong one costs an `undo edits`. If taking a piece out leaves two
+disk, so a wrong one costs one press of undo. If taking a piece out leaves two
 halves of one sitting meeting end to start they are rejoined, and if what
 remains is every sitting whole and in order the arrangement is dropped
 altogether — **deleting an insertion leaves the project as though it never

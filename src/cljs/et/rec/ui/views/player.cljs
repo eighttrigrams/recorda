@@ -177,27 +177,44 @@
       (.addEventListener js/document "keydown"
                          #(when (= "Escape" (.-key %)) (reset! piece-menu nil)))))
 
+(defn- menu-point
+  "Where to put a menu, in the lanes' own coordinates.
+
+   **Not the viewport's.** The menu used to be `position: fixed` at the
+   pointer's clientX/clientY, which is right everywhere except here: the panel
+   around it carries a `backdrop-filter`, and that makes an element the
+   containing block for any fixed descendant. So viewport coordinates were read
+   against the panel and the menu opened a panel's width away from the click.
+
+   Measured against `.lanes` and placed inside it, which is a positioned box
+   either way, so the two cannot disagree again."
+  [e]
+  (when-let [lanes (.closest (.-target e) ".lanes")]
+    (let [r (.getBoundingClientRect lanes)]
+      {:x (- (.-clientX e) (.-left r))
+       :y (- (.-clientY e) (.-top r))
+       :w (.-width r)})))
+
 (defn- open-piece-menu! [take e]
   (.preventDefault e)
   (.stopPropagation e)
   (let [rect (.getBoundingClientRect (.-currentTarget e))
         frac (/ (- (.-clientX e) (.-left rect)) (.-width rect))
         dur  (or (:duration take) 0)
-        t    (* (max 0 (min 0.999 frac)) dur)]
+        t    (* (max 0 (min 0.999 frac)) dur)
+        pt   (menu-point e)]
     (when-let [p (piece-at take t)]
       ;; Carries the project it was opened on. A menu is an *index*, and an
       ;; index means nothing against a different project — so switching while it
       ;; is open must not leave a live button pointing at someone else's piece.
-      (reset! piece-menu (assoc p :kind :piece :id (:id take)
-                                  :x (.-clientX e) :y (.-clientY e)
-                                  :confirm? false)))))
+      (reset! piece-menu (merge p pt {:kind :piece :id (:id take)
+                                      :confirm? false})))))
 
 (defn- open-seam-menu! [take seam e]
   (.preventDefault e)
   (.stopPropagation e)
-  (reset! piece-menu (assoc seam :kind :seam :id (:id take)
-                                 :x (.-clientX e) :y (.-clientY e)
-                                 :confirm? false)))
+  (reset! piece-menu (merge seam (menu-point e)
+                            {:kind :seam :id (:id take) :confirm? false})))
 
 (defn- split-here! [take e]
   (let [rect (.getBoundingClientRect (.-currentTarget e))
@@ -237,7 +254,13 @@
           ;; A marker between two different sittings is the join, not something
           ;; anybody added, so there is nothing to take away.
           fixed?   (and seam? (not (:added? m)))]
-      [:div.piece-menu {:style {:left (:x m) :top (:y m)}
+      [:div.piece-menu {;; Above the pointer and centred on it, so it never
+                        ;; covers the thing it is talking about. Clamped by
+                        ;; half its own minimum width so an edge click does not
+                        ;; push it out of the panel.
+                        :style {:left (max 118 (min (- (or (:w m) 9999) 118)
+                                                    (:x m)))
+                                :top  (- (:y m) 10)}
                         ;; The document-level listener closes this; without
                         ;; stopping the bubble it would close on its own buttons.
                         :on-click #(.stopPropagation %)
@@ -327,7 +350,8 @@
             :on-double-click #(.stopPropagation %)}]]))
      [:div.playhead {:ref   #(reset! playhead-el %)
                      :class (when armed "armed")
-                     :style {:left "58px"}}]]))
+                     :style {:left "58px"}}]
+     [piece-menu-view take]]))
 
 (defn- video-geometry
   "Where the picture is actually painted, and how many video pixels one CSS
@@ -420,13 +444,15 @@
                                    :width  (* (:w crop) inv)
                                    :height (* (:h crop) inv)}}])]))
 
-(defn- edited?
-  "Whether the project has an arrangement of its own rather than the plain
-   appended reading. True after a trim and after recording into the middle —
-   both are the same kind of thing to undo."
+(defn- undoable?
+  "Whether there is a change to step back over.
+
+   Read off the recorded history rather than off the arrangement, because those
+   are different questions: a project can have been edited and then edited back
+   to plain, and pressing undo there should still walk further back rather than
+   the button disappearing under the pointer."
   [take]
-  (boolean (or (seq (:clips take))
-               (some #(or (:out %) (:dropped %)) (:segments take)))))
+  (boolean (seq (:history take))))
 
 (defn player
   "The project pane: what this video is, and everything you do to it.
@@ -485,11 +511,12 @@
                        :disabled (or (state/busy?) (< (:time @state/app) 0.1))
                        :title "Cut everything after the playhead; the next recording carries on from here"}
               "Trim to playhead"]
-             (when (edited? take)
-               [:button.danger {:on-click (fn [_] (state/untrim! id))
-                                :disabled (state/busy?)
-                                :title "Back to plain appended sittings, in the order they were recorded. Nothing was ever deleted, so this can always be pressed."}
-                "undo edits"])
+             (when (undoable? take)
+               [:button {:on-click (fn [_] (state/undo! id))
+                         :disabled (state/busy?)
+                         :title (str "Step back one change — " (count (:history take))
+                                     " to go. Nothing was ever deleted from disk, so every step back is one the files can still produce.")}
+                "undo"])
              [:button {:class (when @crop-mode "recording")
                        :on-click (fn [_] (swap! crop-mode not) (reset! crop-drag nil))
                        :title "Drag a box on the picture; the export is cropped to it"}
@@ -500,7 +527,6 @@
                        :disabled (:exporting? @state/app)}
               (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
             [lanes take]
-            [piece-menu-view take]
             [:div.meta-line
              [:span (:width take) "×" (:height take)]
              (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))

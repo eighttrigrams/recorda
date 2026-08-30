@@ -184,18 +184,22 @@
       :else (let [r (assemble/trim-at! id at)]
               (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
-(defn untrim-handler
-  "POST /api/recordings/:id/untrim — clear every edit: back to plain appended
-  sittings, in the order they were recorded.
+(defn undo-handler
+  "POST /api/recordings/:id/undo — step back one change to the arrangement.
 
-  Possible because editing only ever wrote an arrangement over the segments and
-  never touched a file. A sitting recorded into the middle is not lost by this —
-  it goes back to being the last one."
+  One press per change: a trim, a marker, a deleted piece, a sitting recorded
+  into the middle. It is undo and not a reset — there is deliberately no button
+  that throws every edit away at once, because a control that blunt is one you
+  press by accident and cannot take back in kind.
+
+  Possible at all because editing only ever writes an arrangement over the
+  sittings and never touches a file, so every state it can step back to is one
+  the files can still produce."
   [req]
   (let [id (get-in req [:params :id])]
     (if (nil? (store/read-meta id))
       {:status 404 :body {:error "no such project"}}
-      (let [r (assemble/untrim! id)]
+      (let [r (assemble/undo! id)]
         (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn delete-clip-handler
