@@ -4,7 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>recorda</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <!-- The SVG is the real one and every current browser prefers it. The .ico
+         is there for the request browsers make on their own whether it is
+         asked for or not, and which was answering 404. Cache-busted with the
+         build, because a favicon a browser has already cached is a favicon it
+         will not ask about again. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=__CACHE_BUST__">
+    <link rel="alternate icon" href="/favicon.ico?v=__CACHE_BUST__" sizes="16x16 32x32 48x48">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=__CACHE_BUST__">
     <link rel="stylesheet" href="/styles.css?v=__CACHE_BUST__">
   </head>
   <body data-build="__CACHE_BUST__">
