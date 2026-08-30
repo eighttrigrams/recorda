@@ -3,6 +3,27 @@
 Work order. Design done on the host; the implementation is yours. Nothing here
 is built.
 
+## Before you start
+
+Read `README.md` first — it is the orientation, and several of its decisions are
+load-bearing here rather than merely interesting.
+
+`make start` runs the app on `http://127.0.0.1:3200`; `make stop` stops it. Host
+only: AVFoundation needs a window server and CoreAudio, so none of this can run
+or be tested in the devbox.
+
+**A recording cannot be driven from the API alone.** The microphone is captured
+*in the browser* — ffmpeg's audio input drops about 11% of it, which is why —
+so a take started with `curl` will record video, sit at `awaiting-audio`
+forever, and never assemble. Drive the UI to make a take. Everything after
+that (trim, untrim, crop, export) is fine over HTTP and much quicker to test
+that way.
+
+Three cookbook Recipes carry the context that is not in this repo: the ffmpeg
+capture defect and its fix, why two HTML media elements cannot be synced (and
+the postscript about hunting a capture bug in the player for three rounds), and
+how to prove an audio capture is losing samples. Search cookbook for `recorda`.
+
 ## Where things stand
 
 A project is one video made of numbered **segments**, each captured whole and
