@@ -79,6 +79,57 @@
              :duration dur :peak-count (:count pk)})
           {:ok? true :id cid :duration dur})))))
 
+(defn- sample-length
+  "How long a sample should be for the project it is going into.
+
+   It fits what is left of the timeline from where it is dropped, up to twenty
+   seconds. A sample that overhangs the end on arrival would be demonstrating
+   the wrong thing — the dashed overhang edge is worth seeing when you put it
+   there, and confusing when the app did."
+  [id at]
+  (let [dur (or (:duration (store/read-meta id)) 0.0)
+        room (- dur (double (or at 0.0)))]
+    (max 6.0 (min 20.0 (if (pos? room) room 20.0)))))
+
+(defn- sample-args
+  "A short bed, synthesised rather than shipped.
+
+   The lane is hard to try without a file to hand, and a binary in the repo is
+   a thing to license, to keep and to explain. Four sine partials on a major
+   triad, mixed at falling weights so the fundamental carries, with a slow
+   tremolo to stop it sitting dead still and fades at both ends.
+
+   It is plainly synthetic, and that is useful in a sample: you can hear
+   exactly where it starts and stops, which is the thing you are looking at the
+   lane to check."
+  [^java.io.File out secs]
+  (let [secs (double secs)
+        ;; Scaled rather than fixed, so a six second bed is not all fade.
+        fi   (min 2.5 (/ secs 4.0))
+        fo   (min 3.0 (/ secs 4.0))]
+    (concat
+      (mapcat (fn [f] ["-f" "lavfi" "-i" (format "sine=frequency=%s:duration=%.3f" f secs)])
+              ["130.81" "196.00" "261.63" "329.63"])
+      ["-filter_complex"
+       (str "[0]volume=0.30[a];[1]volume=0.20[b];[2]volume=0.14[c];[3]volume=0.09[d];"
+            "[a][b][c][d]amix=inputs=4:normalize=0,"
+            "tremolo=f=0.22:d=0.35,"
+            (format "afade=t=in:st=0:d=%.3f," fi)
+            (format "afade=t=out:st=%.3f:d=%.3f," (- secs fo) fo)
+            "aformat=sample_rates=44100:channel_layouts=stereo")
+       "-c:a" "libmp3lame" "-b:a" "128k" (str out)])))
+
+(defn add-sample!
+  "Put a synthesised bed in the lane at `at`, so the lane can be tried without
+   going to find a file first."
+  [id at]
+  (let [tmp (java.io.File/createTempFile "recorda-sample-" ".mp3")]
+    (.delete tmp)
+    (let [res (ff/exec! (sample-args tmp (sample-length id at)))]
+      (if-not (:ok? res)
+        {:ok? false :error (str "could not make a sample: " (:log res))}
+        (add! id tmp "sample bed.mp3" at)))))
+
 (defn move!
   "Put a clip somewhere else on the timeline. The only thing a drag changes."
   [id cid at]

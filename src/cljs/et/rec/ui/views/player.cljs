@@ -429,7 +429,13 @@
         [:div.empty {:style {:padding "6px 8px"}}
          (if (:importing? @state/app)
            "reading the file…"
-           "drop an audio file here, or press +")])]]))
+           [:span "drop an audio file here, press + — or "
+            [:a.sample-link
+             {:href "#"
+              :title "A synthesised bed, so the lane can be tried without going to find a file"
+              :on-click (fn [e] (.preventDefault e) (.stopPropagation e)
+                          (state/add-sample-music! id (:time @state/app)))}
+             "add a sample"]])])]]))
 
 ;; Dragging is tracked on the window rather than the clip, so the pointer can
 ;; leave the lane mid-gesture without the clip sticking where it was abandoned.

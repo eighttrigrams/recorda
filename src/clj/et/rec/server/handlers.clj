@@ -266,6 +266,22 @@
                      (catch Exception e {:ok? false :error (.getMessage e)}))]
           (if (:ok? r) (ok (store/read-meta id)) (bad r)))))))
 
+(defn add-sample-music-handler
+  "POST /api/recordings/:id/music/sample — a synthesised bed at `at` seconds.
+
+  The lane is hard to try without a file to hand, and shipping a binary in the
+  repo is a thing to license, to keep and to explain. This makes one with
+  ffmpeg: four sine partials on a major triad with a slow tremolo and fades, and
+  plainly synthetic, which is what you want in a sample — you can hear exactly
+  where it starts and stops."
+  [req]
+  (let [id (get-in req [:params :id])
+        at (or (some-> (get-in req [:params "at"]) parse-double) 0.0)]
+    (if (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such project"}}
+      (let [r (music/add-sample! id at)]
+        (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
 (defn move-music-handler
   "PUT /api/recordings/:id/music/:cid — put a music clip somewhere else on the
   timeline. `at` in seconds, and the only thing dragging one changes."

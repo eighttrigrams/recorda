@@ -64,6 +64,7 @@
     (DELETE "/recordings/:id/seams/:i" [] h/delete-seam-handler)
     ;; Raw bytes in, like the audio upload above and for the same reason.
     (POST   "/recordings/:id/music"      [] h/add-music-handler)
+    (POST   "/recordings/:id/music/sample" [] h/add-sample-music-handler)
     (PUT    "/recordings/:id/music/:cid" [] h/move-music-handler)
     (DELETE "/recordings/:id/music/:cid" [] h/delete-music-handler)
     (PUT    "/recordings/:id/gain"       [] h/set-gain-handler)))

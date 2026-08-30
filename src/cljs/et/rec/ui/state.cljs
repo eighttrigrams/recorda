@@ -287,6 +287,15 @@
       (.catch (fn [e] (swap! app assoc :importing? false
                              :error (str "could not import: " e))))))
 
+(defn add-sample-music!
+  "A synthesised bed, so the lane can be tried without going to find a file."
+  [id at]
+  (swap! app assoc :error nil :importing? true)
+  (api/POST (str "/api/recordings/" id "/music/sample?at=" at)
+            (fn [t] (swap! app assoc :importing? false) (refresh-take! t))
+            (fn [_] (swap! app assoc :importing? false
+                           :error "could not make a sample"))))
+
 (defn move-music!
   "Put a music clip somewhere else. The only thing dragging one changes, and it
    moves nothing else — that independence is what the lane is for."

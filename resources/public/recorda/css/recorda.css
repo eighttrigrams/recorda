@@ -358,3 +358,4 @@ body { max-width: 1600px; }
   min-width: 38px;
 }
 .levels-note { font-size: 0.78em; color: var(--muted-text); }
+.sample-link { color: var(--accent); cursor: pointer; text-decoration: underline; }

@@ -284,6 +284,15 @@ Drop an audio file on the Music lane, or press the `+` beside it. Dropping puts
 the clip where you dropped it; the `+` puts it at the playhead. Drag a clip
 along the lane to move it, right-click it to remove it.
 
+**add a sample** on the empty lane makes a bed with ffmpeg rather than shipping
+one — four sine partials on a major triad, a slow tremolo, fades at both ends.
+A binary in the repo would be a thing to license, to keep and to explain, and a
+plainly synthetic sample is the more useful kind anyway: you can hear exactly
+where it starts and stops, which is what you are looking at the lane to check.
+It is cut to fit whatever is left of the timeline from where it lands, up to
+twenty seconds, because a sample that overhangs the end on arrival would be
+demonstrating the wrong thing.
+
 **No edit moves a music clip.** Trim the video and the music stays exactly where
 you put it — the tail simply is not heard, and a clip that runs off the end is
 drawn with a dashed edge to say so rather than being silently shortened. That is
