@@ -25,8 +25,13 @@
   (:require [reagent.core :as r]))
 
 (defonce ^:private ctx (atom nil))
-(defonce ^:private gain (atom nil))
-(defonce ^:private source (atom nil))
+(defonce ^:private gain (atom nil))          ;; master
+(defonce ^:private voice-gain (atom nil))
+(defonce ^:private music-gain (atom nil))
+(defonce ^:private source (atom nil))        ;; the voice, which owns the clock
+(defonce ^:private music-sources (atom []))
+(defonce ^:private music-buffers (atom {}))  ;; file -> AudioBuffer
+(defonce ^:private music-clips (atom []))    ;; [{:id :file :at}]
 (defonce ^:private loaded (atom nil))   ;; {:id … :buf AudioBuffer}
 
 ;; Reagent-visible playback state. `offset` is where the playhead was when the
@@ -45,12 +50,29 @@
 
 (defn- ensure-ctx! []
   (or @ctx
-      (let [c (js/AudioContext.)
-            g (.createGain c)]
+      (let [c  (js/AudioContext.)
+            g  (.createGain c)
+            vg (.createGain c)
+            mg (.createGain c)]
+        ;; Two lanes into one master, so a slider is a gain node and not a
+        ;; number applied to samples. The voice keeps the clock either way —
+        ;; music hangs off the same context and is scheduled against it, never
+        ;; the other way round.
         (.connect g (.-destination c))
-        (reset! gain g)
+        (.connect vg g)
+        (.connect mg g)
+        (reset! gain g) (reset! voice-gain vg) (reset! music-gain mg)
         (reset! ctx c)
         c)))
+
+(defn set-gains!
+  "How loud each lane plays. The same numbers the export uses — a balance set
+   by ear against the preview and then undone on the way out would be worse
+   than no slider at all."
+  [voice music]
+  (ensure-ctx!)
+  (when-let [v @voice-gain] (set! (.-value (.-gain v)) (double (or voice 1.0))))
+  (when-let [m @music-gain] (set! (.-value (.-gain m)) (double (or music 1.0)))))
 
 (defn duration [] (if-let [b (:buf @loaded)] (.-duration b) 0))
 
@@ -86,14 +108,49 @@
   (let [{:keys [playing? started-at]} @state]
     (and playing? @ctx (>= (.-currentTime @ctx) started-at))))
 
+(defn- stop-music! []
+  (doseq [s @music-sources]
+    (set! (.-onended s) nil)
+    (try (.stop s) (catch :default _ nil)))
+  (reset! music-sources []))
+
 (defn- stop-source!
-  "Drop the current node. Its onended is cleared first, because stopping it
-   fires that handler and we only want the handler to mean 'the take ran out'."
+  "Drop the current nodes. The voice's onended is cleared first, because
+   stopping it fires that handler and we only want the handler to mean 'the
+   take ran out'. A music clip ending means nothing at all — it is not the
+   clock, and there are usually others still to come."
   []
+  (stop-music!)
   (when-let [s @source]
     (set! (.-onended s) nil)
     (try (.stop s) (catch :default _ nil))
     (reset! source nil)))
+
+(defn- start-music!
+  "Schedule every music clip that is still to be heard from `pos` onward.
+
+   `pos` is where the playhead will be at `when`, not where it is now — the two
+   differ by the scheduling lead, and using the wrong one puts the music twenty
+   milliseconds out from the voice.
+
+   A clip already under way when playback starts is not skipped: it begins part
+   of the way in, which is what makes seeking into the middle of a track sound
+   like a seek and not like a track that failed to start."
+  [c when pos]
+  (reset! music-sources
+          (vec (keep (fn [clip]
+                       (when-let [b (get @music-buffers (:file clip))]
+                         (let [at (double (or (:at clip) 0.0))
+                               d  (.-duration b)]
+                           (when (> (+ at d) pos)
+                             (let [src (.createBufferSource c)]
+                               (set! (.-buffer src) b)
+                               (.connect src @music-gain)
+                               (if (>= at pos)
+                                 (.start src (+ when (- at pos)) 0)
+                                 (.start src when (- pos at)))
+                               src)))))
+                     @music-clips))))
 
 (declare pause!)
 
@@ -116,7 +173,42 @@
           (set! (.-onended src) (fn [] (pause!) (swap! state assoc :offset (duration))))
           (.start src when pos)
           (reset! source src)
+          (start-music! c when pos)
           (swap! state assoc :playing? true :offset pos :started-at when))))))
+
+(defn- reschedule-music!
+  "Put the music back in the right places without disturbing the voice.
+
+   Dragging a clip while the take is playing has to be heard, and stopping the
+   voice to achieve it would be a click in the one track that must never have
+   one. Only the music nodes are rebuilt."
+  []
+  (when (and (:playing? @state) @ctx)
+    (stop-music!)
+    (start-music! @ctx
+                  (+ (.-currentTime @ctx) schedule-ahead)
+                  (+ (position) schedule-ahead))))
+
+(defn set-music!
+  "The music lane's clips, decoded and held.
+
+   Keyed on the file rather than the clip, so moving one costs nothing: an
+   `:at` is a number in the arrangement and the samples behind it have not
+   changed."
+  [id clips]
+  (reset! music-clips (vec clips))
+  (let [live (set (map :file clips))]
+    (swap! music-buffers #(into {} (filter (fn [[k _]] (contains? live k)) %))))
+  (doseq [c clips
+          :when (not (contains? @music-buffers (:file c)))]
+    (-> (js/fetch (str "/media/" id "/music/" (:id c) "/audio"))
+        (.then #(.arrayBuffer %))
+        (.then #(.decodeAudioData (ensure-ctx!) %))
+        (.then (fn [b]
+                 (swap! music-buffers assoc (:file c) b)
+                 (reschedule-music!)))
+        (.catch (fn [e] (js/console.error "recorda: could not decode music" e)))))
+  (reschedule-music!))
 
 (defn pause! []
   (let [p (position)]
@@ -161,4 +253,6 @@
 (defn unload! []
   (stop-source!)
   (reset! loaded nil)
+  (reset! music-clips [])
+  (reset! music-buffers {})
   (swap! state assoc :playing? false :offset 0.0 :ready? false :loading? false))

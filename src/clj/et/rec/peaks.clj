@@ -72,9 +72,14 @@
                  (recur acc' cur' bkt' carry'))))))))))
 
 (defn write!
-  "Compute and store peaks.json beside the audio."
-  [audio-file out-file]
-  (let [{:keys [duration peaks]} (compute audio-file)]
+  "Compute and store peaks.json beside the audio.
+
+   The bucket count is an argument because the music lane wants fewer: a clip
+   is drawn a fraction of the timeline's width, so the voice lane's resolution
+   would be detail nothing can show."
+  ([audio-file out-file] (write! audio-file out-file default-buckets))
+  ([audio-file out-file n-buckets]
+  (let [{:keys [duration peaks]} (compute audio-file n-buckets)]
     (io/make-parents out-file)
     (spit out-file
           (json/generate-string
@@ -89,4 +94,4 @@
        ;; common thing to get wrong at the interface.
        :peak-dbfs (if (pos? top)
                     (/ (Math/round (* 10.0 (* 20.0 (Math/log10 top)))) 10.0)
-                    -80.0)})))
+                    -80.0)}))))

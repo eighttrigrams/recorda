@@ -13,7 +13,9 @@
    edit you could not review. What is left for this step is the crop, which is
    genuinely an output setting: it changes the frame you hand out and not the
    footage you keep."
-  (:require [et.rec.ff :as ff]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
+            [et.rec.ff :as ff]
             [et.rec.store :as store]))
 
 (defn normalise-crop
@@ -59,6 +61,50 @@
       ["-vf" (format "crop=%d:%d:%d:%d" (:w crop) (:h crop) (:x crop) (:y crop))
        "-c:v" "h264_videotoolbox" "-b:v" (str kbps "k")])))
 
+(defn- audio-graph
+  "The inputs and the filter that turn the voice and the music into one track.
+
+   Answers nil when there is nothing to do — no music and both lanes at unity —
+   so the ordinary export stays the two-input copy it always was and pays for
+   none of this.
+
+   `amix` with `normalize=0` because normalising is the wrong instrument here:
+   it would divide every input by their number, so adding one quiet music clip
+   would halve the voice. The lanes have sliders precisely so that the balance
+   is a decision rather than an average. `duration=first` keeps the voice
+   deciding the length, which is what makes a music clip hanging off the end
+   simply not heard rather than a tail of music over nothing.
+
+   Everything is brought to one format before mixing. The voice is mono off an
+   interface and a music file is very often stereo at another sample rate, and
+   amix will not mix what does not match."
+  [meta ^java.io.File audio]
+  (let [clips (vec (:music meta))
+        vg    (double (or (:voice-gain meta) 1.0))
+        mg    (double (or (:music-gain meta) 1.0))
+        fmt   "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"]
+    (when (or (seq clips) (not= 1.0 vg))
+      (let [labels (cons "[v]" (map #(str "[m" % "]") (range (count clips))))
+            chains (cons (format "[1:a]volume=%.4f,%s[v]" vg fmt)
+                         (map-indexed
+                           (fn [i c]
+                             ;; adelay wants whole milliseconds, and `all=1` so
+                             ;; it delays every channel rather than only the
+                             ;; first — without it a stereo clip comes out with
+                             ;; one side early.
+                             (format "[%d:a]adelay=%d:all=1,volume=%.4f,%s[m%d]"
+                                     (+ i 2)
+                                     (long (Math/round (* 1000.0 (double (:at c 0.0)))))
+                                     mg fmt i))
+                           clips))]
+        {:inputs (mapcat (fn [c] ["-i" (str (io/file (io/file (.getParentFile audio) "music")
+                                                     (:file c)))])
+                         clips)
+         :filter (str (str/join ";" chains) ";"
+                      (str/join "" labels)
+                      (format "amix=inputs=%d:normalize=0:duration=first[aout]"
+                              (inc (count clips))))}))))
+
 (defn export!
   "Write export.mp4 for a take: video stream-copied, audio encoded to AAC.
 
@@ -80,9 +126,13 @@
             sw    (or (some-> (ff/probe video "v:0" "stream=width") parse-long) 1)
             sh    (or (some-> (ff/probe video "v:0" "stream=height") parse-long) 1)
             ca    (crop-args crop sw sh 6000)
+            ag    (audio-graph meta audio)
             res (ff/exec! (concat
                             ["-i" (str video) "-i" (str audio)]
-                            ["-map" "0:v" "-map" "1:a"]
+                            (:inputs ag)
+                            (if ag
+                              ["-filter_complex" (:filter ag) "-map" "0:v" "-map" "[aout]"]
+                              ["-map" "0:v" "-map" "1:a"])
                             (or ca ["-c:v" "copy"])
                             ["-c:a" "aac" "-b:a" audio-bitrate
                              ;; The two tracks are written to the same length,

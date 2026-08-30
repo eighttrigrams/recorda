@@ -16,7 +16,19 @@
    "wav"  "audio/wav"
    "mkv"  "video/x-matroska"
    "json" "application/json"
-   "log"  "text/plain"})
+   "log"  "text/plain"
+   ;; What a music import can be. The browser decodes these through
+   ;; decodeAudioData, which reads the bytes rather than the header we send —
+   ;; but a wrong type here is still a wrong type in the network tab, and it is
+   ;; the first thing anybody checks when a file will not play.
+   "mp3"  "audio/mpeg"
+   "m4a"  "audio/mp4"
+   "aac"  "audio/aac"
+   "ogg"  "audio/ogg"
+   "opus" "audio/ogg"
+   "flac" "audio/flac"
+   "aif"  "audio/aiff"
+   "aiff" "audio/aiff"})
 
 (defn- content-type [^java.io.File f]
   (get content-types (str/lower-case (or (last (str/split (.getName f) #"\.")) ""))

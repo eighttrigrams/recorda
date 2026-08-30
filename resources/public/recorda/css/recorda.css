@@ -307,3 +307,54 @@ body { max-width: 1600px; }
   font-size: 0.84em;
 }
 .piece-menu-confirm button { padding: 5px 9px; font-size: 0.95em; }
+
+/* --- the third lane -------------------------------------------------------
+
+   Picture and voice were recorded together and are locked together. Music was
+   not recorded here at all, so it is drawn as loose blocks you can pick up and
+   put down — the visual difference is the point. */
+
+.lane-music .lane-body { height: 40px; }
+.music-clip {
+  position: absolute; top: 3px; bottom: 3px; min-width: 6px;
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  border: 1px solid var(--accent); border-radius: 6px;
+  cursor: grab; overflow: hidden; z-index: 1;
+  display: flex; align-items: center;
+}
+.music-clip:hover { background: color-mix(in srgb, var(--accent) 46%, transparent); }
+.music-clip.dragging { cursor: grabbing; z-index: 4; box-shadow: var(--glass-shadow); }
+/* A clip running past the end of the video is not an error — it just will not
+   all be heard, and saying so beats silently trimming what you dropped. */
+.music-clip.overhangs {
+  border-style: dashed;
+  border-color: var(--record);
+}
+.music-name {
+  font-size: 0.72em; padding: 0 6px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; color: var(--text-primary);
+  pointer-events: none;
+}
+.lane-music .lane-label { flex-direction: row; gap: 6px; }
+.add-music {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 17px; height: 17px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--input-border); color: var(--text-secondary);
+  font-size: 0.95em; line-height: 1;
+}
+.add-music:hover { border-color: var(--accent); color: var(--accent); }
+
+/* --- lane levels ---------------------------------------------------------
+   The same numbers the export uses. A balance set by ear against the preview
+   and then undone on the way out would be worse than no slider at all. */
+
+.levels { display: flex; align-items: center; gap: 20px; margin: 2px 0 10px; }
+.gain { display: inline-flex; align-items: center; gap: 8px; font-size: 0.8em; }
+.gain-label { color: var(--text-secondary); min-width: 38px; }
+.gain input[type=range] { width: 130px; accent-color: var(--accent); }
+.gain.unity input[type=range] { accent-color: var(--text-secondary); }
+.gain-read {
+  font-variant-numeric: tabular-nums; color: var(--text-secondary);
+  min-width: 38px;
+}
+.levels-note { font-size: 0.78em; color: var(--muted-text); }

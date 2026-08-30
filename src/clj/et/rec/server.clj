@@ -61,7 +61,12 @@
     (POST   "/recordings/:id/export" [] h/export-handler)
     (POST   "/recordings/:id/split"    [] h/split-handler)
     (DELETE "/recordings/:id/clips/:i" [] h/delete-clip-handler)
-    (DELETE "/recordings/:id/seams/:i" [] h/delete-seam-handler)))
+    (DELETE "/recordings/:id/seams/:i" [] h/delete-seam-handler)
+    ;; Raw bytes in, like the audio upload above and for the same reason.
+    (POST   "/recordings/:id/music"      [] h/add-music-handler)
+    (PUT    "/recordings/:id/music/:cid" [] h/move-music-handler)
+    (DELETE "/recordings/:id/music/:cid" [] h/delete-music-handler)
+    (PUT    "/recordings/:id/gain"       [] h/set-gain-handler)))
 
 (defn- cache-bust []
   (let [f (io/file "resources/public/recorda/js/main.js")]
@@ -79,6 +84,7 @@
 (defroutes page-routes
   ;; Media is deliberately outside the JSON middleware: its body is a stream
   ;; over a video file, and wrap-json-response would be asked to serialise it.
+  (GET "/media/:id/music/:cid/:what" [] h/music-media-handler)
   (GET "/media/:id/:name" [] h/media-handler)
   (GET "/" [] (serve-with-bust "index.html" "text/html"))
   (GET "/styles.css" [] (serve-with-bust "styles.css" "text/css"))

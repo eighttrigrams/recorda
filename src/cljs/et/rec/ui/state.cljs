@@ -54,6 +54,12 @@
   [take]
   (str (or (:rev take) 0) "-" (or (:duration take) 0)))
 
+(defn- sync-music!
+  "Hand the engine the music lane as it now stands, and the two lane gains."
+  [take]
+  (engine/set-gains! (or (:voice-gain take) 1.0) (or (:music-gain take) 1.0))
+  (engine/set-music! (:id take) (:music take)))
+
 (defn select! [id]
   (let [take (first (filter (fn [r] (= id (:id r))) (:recordings @app)))]
     (swap! app assoc :selected id :time 0.0 :playing? false
@@ -61,7 +67,17 @@
     ;; Decoding the whole thing up front is what buys playback that cannot
     ;; stall.
     (engine/load! id (version take))
+    (sync-music! take)
     (fetch-peaks! id)))
+
+(defn- refresh-take!
+  "Take the server's answer as the project and put the music lane in step with
+   it, without touching the voice — none of the music operations change it, and
+   reloading it would blank the waveform for nothing."
+  [take]
+  (swap! app update :recordings
+         (fn [rs] (mapv #(if (= (:id take) (:id %)) take %) rs)))
+  (sync-music! take))
 
 ;; --- the take --------------------------------------------------------------
 
@@ -249,6 +265,58 @@
               (fn [_] (fetch-recordings!))
               #(swap! app assoc :error (or (get-in % [:response :error])
                                            "could not remove that marker"))))
+
+(defn add-music!
+  "Import an audio file into the music lane at `at` seconds.
+
+   Sent as raw bytes for the same reason the microphone recording is: the file
+   is the body, and there is no comfortable way to post one through cljs-ajax."
+  [id file at]
+  (swap! app assoc :error nil :importing? true)
+  (-> (js/fetch (str "/api/recordings/" id "/music")
+                #js {:method "POST"
+                     :headers #js {"Content-Type" "application/octet-stream"
+                                   "X-Filename" (.-name file)
+                                   "X-At" (str at)}
+                     :body file})
+      (.then (fn [res]
+               (swap! app assoc :importing? false)
+               (if (.-ok res)
+                 (.then (.json res) #(refresh-take! (js->clj % :keywordize-keys true)))
+                 (swap! app assoc :error "that file could not be read as audio"))))
+      (.catch (fn [e] (swap! app assoc :importing? false
+                             :error (str "could not import: " e))))))
+
+(defn move-music!
+  "Put a music clip somewhere else. The only thing dragging one changes, and it
+   moves nothing else — that independence is what the lane is for."
+  [id cid at]
+  (api/PUT (str "/api/recordings/" id "/music/" cid) {:at at}
+           refresh-take!
+           #(swap! app assoc :error "could not move that clip")))
+
+(defn delete-music! [id cid]
+  (api/DELETE (str "/api/recordings/" id "/music/" cid)
+              refresh-take!
+              #(swap! app assoc :error "could not remove that clip")))
+
+(defn set-gain!
+  "How loud a lane is, heard now and written down for the export.
+
+   The engine is told at once so the slider is audible under the pointer, and
+   the server is told on release — a PUT and a re-assemble per pixel of travel
+   would be neither."
+  [id k v live?]
+  (let [take (selected-take)
+        v    (double v)
+        take (assoc take (if (= :voice k) :voice-gain :music-gain) v)]
+    (swap! app update :recordings
+           (fn [rs] (mapv #(if (= id (:id %)) take %) rs)))
+    (engine/set-gains! (or (:voice-gain take) 1.0) (or (:music-gain take) 1.0))
+    (when-not live?
+      (api/PUT (str "/api/recordings/" id "/gain") {k v}
+               (fn [_] nil)
+               #(swap! app assoc :error "could not set the level")))))
 
 (defn delete! [id]
   (api/DELETE (str "/api/recordings/" id)

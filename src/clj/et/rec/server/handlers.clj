@@ -13,6 +13,7 @@
             [et.rec.export :as export]
             [et.rec.ff :as ff]
             [et.rec.media :as media]
+            [et.rec.music :as music]
             [et.rec.split :as split]
             [et.rec.store :as store]))
 
@@ -241,6 +242,91 @@
       (nil? i)                    (bad {:error "which marker?"})
       :else (let [r (assemble/delete-seam! id i)]
               (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn add-music-handler
+  "POST /api/recordings/:id/music — a background music file, as a raw body, with
+  `X-Filename` and `X-At` saying what it was called and where on the timeline it
+  goes.
+
+  The third lane is free of the other two. Picture and voice were recorded
+  together and are locked together; music was not recorded here at all, so where
+  it sits is a decision made afterwards and changed at will — and no edit to the
+  video moves it."
+  [req]
+  (let [id   (get-in req [:params :id])
+        name (or (get-in req [:headers "x-filename"]) "music")
+        at   (or (some-> (get-in req [:headers "x-at"]) parse-double) 0.0)]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? (:body req))          (bad {:error "no file"})
+      :else
+      (let [tmp (java.io.File/createTempFile (str "recorda-music-" id "-") ".bin")]
+        (io/copy (:body req) tmp)
+        (let [r (try (music/add! id tmp name at)
+                     (catch Exception e {:ok? false :error (.getMessage e)}))]
+          (if (:ok? r) (ok (store/read-meta id)) (bad r)))))))
+
+(defn move-music-handler
+  "PUT /api/recordings/:id/music/:cid — put a music clip somewhere else on the
+  timeline. `at` in seconds, and the only thing dragging one changes."
+  [req]
+  (let [id  (get-in req [:params :id])
+        cid (get-in req [:params :cid])
+        at  (or (some-> (get-in req [:params "at"]) parse-double)
+                (some-> (get-in req [:body :at]) double))]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? at)                   (bad {:error "at (seconds) required"})
+      :else (let [r (music/move! id cid at)]
+              (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn delete-music-handler
+  "DELETE /api/recordings/:id/music/:cid — take a music clip out of the lane and
+  its file off the disk.
+
+  The one thing here that really deletes. A music file was imported rather than
+  recorded, so the copy that matters is the one you imported it from — keeping a
+  second against a change of mind would only fill the project with tracks you
+  decided against."
+  [req]
+  (let [id (get-in req [:params :id])
+        r  (music/remove! id (get-in req [:params :cid]))]
+    (if (:ok? r) (ok (store/read-meta id)) (bad r))))
+
+(defn set-gain-handler
+  "PUT /api/recordings/:id/gain — how loud each lane plays and exports, as
+  `voice` and `music`, where 1.0 is as recorded.
+
+  The same numbers do both jobs on purpose. A balance you set by ear against
+  the preview and then find undone in the export would be worse than no slider
+  at all."
+  [req]
+  (let [id (get-in req [:params :id])
+        b  (:body req)]
+    (if (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such project"}}
+      (do (when (:voice b) (music/set-gain! id :voice-gain (double (:voice b))))
+          (when (:music b) (music/set-gain! id :music-gain (double (:music b))))
+          (ok (store/read-meta id))))))
+
+(defn music-media-handler
+  "GET /media/:id/music/:cid/:what — a music clip's `audio` or `peaks`.
+
+  Keyed on the clip rather than the filename, so nothing from the URL is ever
+  joined onto a path: the name is looked up in the project's own list, and a
+  clip that is not in it has no file to serve."
+  [req]
+  (let [{:keys [id cid what]} (:params req)
+        f (case what
+            "audio" (music/clip-file id cid)
+            "peaks" (music/peaks-file id cid)
+            nil)]
+    (if-not (and f (.exists ^java.io.File f))
+      {:status 404 :body "no such clip"}
+      (media/file-response f (get-in req [:headers "range"])
+                           ;; The file never changes once imported, and the
+                           ;; peaks are computed from it once.
+                           "private, max-age=31536000, immutable"))))
 
 (defn export-handler
   "POST /api/recordings/:id/export — mux the take's two tracks into one

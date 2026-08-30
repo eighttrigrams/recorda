@@ -143,6 +143,7 @@ recordings/2026-08-30-0052-05/
   video.mp4                the assembly — segments concatenated
   audio.wav                the assembly
   peaks.json               what the waveform lane draws
+  music/                   imported background tracks, stored as they arrived
   meta.edn                 the sitting list, the arrangement, everything else
   export.mp4               only after you export
 ```
@@ -270,6 +271,53 @@ halves of one sitting meeting end to start they are rejoined, and if what
 remains is every sitting whole and in order the arrangement is dropped
 altogether — **deleting an insertion leaves the project as though it never
 happened.**
+
+## The third lane
+
+Picture and voice were recorded together and are locked together — that is what
+the whole assembly exists to preserve, and why neither can be moved without the
+other. **Music is the opposite kind of thing.** It was not recorded here, it has
+no instant it belongs to, and where it sits is a decision you make afterwards
+and change your mind about.
+
+Drop an audio file on the Music lane, or press the `+` beside it. Dropping puts
+the clip where you dropped it; the `+` puts it at the playhead. Drag a clip
+along the lane to move it, right-click it to remove it.
+
+**No edit moves a music clip.** Trim the video and the music stays exactly where
+you put it — the tail simply is not heard, and a clip that runs off the end is
+drawn with a dashed edge to say so rather than being silently shortened. That is
+the honest reading of a music clip's `:at` as a place in the *finished piece*
+rather than a place in the recording, and it is the freedom the lane is for.
+
+The file is stored as it arrived and never touched — no transcode, no
+normalise. The browser decodes it for playback and ffmpeg reads it at export,
+and both are happy with whatever came off the disk; converting would only be a
+second copy to keep and a generation to lose.
+
+Removing a music clip is the one thing here that really deletes. A music file
+was *imported* rather than recorded, so the copy that matters is the one you
+imported it from — keeping a second against a change of mind would only fill the
+project with tracks you decided against.
+
+## Two levels, one meaning
+
+The Voice and Music sliders set how loud each lane is, and **the same numbers do
+both jobs** — what you hear in the browser is what lands in the mp4. A balance
+set by ear against the preview and then found undone in the finished file would
+be worse than no slider at all.
+
+In the browser each lane is a gain node into a master; on export it is a
+`volume` filter into `amix`. The mix uses `normalize=0` deliberately, because
+normalising divides every input by their number — adding one quiet music clip
+would halve the voice. The sliders exist precisely so the balance is a decision
+rather than an average. `duration=first` keeps the voice deciding the length,
+which is what makes music hanging off the end simply not heard.
+
+Measured, with the voice muted and a twelve-second clip placed at 2.0 s: silence
+before 2.0, **-33.57 dB** through the clip against the source file's -33.70, and
+silence again after 14.0. Halving a slider costs 6.03 dB, doubling gains 6.01 —
+so the number on the screen is the number in the file.
 
 ## meta.edn
 
