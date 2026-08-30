@@ -130,9 +130,10 @@ Recording.
 ## A project is a directory
 
 A **project is one video**, built up over as many sittings as it takes. You make
-a card, open it, and record into it: the first press is the opening, every later
-press is appended. There is no global record button, because there is no such
-thing as recording without somewhere for it to go.
+a card, open it, and record into it: the first press is the opening, and every
+later press lands where the mode beside it says. There is no global record
+button, because there is no such thing as recording without somewhere for it to
+go.
 
 ```
 recordings/2026-08-30-0052-05/
@@ -142,34 +143,98 @@ recordings/2026-08-30-0052-05/
   video.mp4                the assembly — segments concatenated
   audio.wav                the assembly
   peaks.json               what the waveform lane draws
-  meta.edn                 everything else, including the segment list
+  meta.edn                 the sitting list, the arrangement, everything else
   export.mp4               only after you export
 ```
 
 No SQLite, unlike every sibling in this workspace. There is one user, the rows
 are files, and every query this app has is `ls`.
 
-## Trim, and record on
+## Where the next take goes
 
-Park the playhead and press **Trim to playhead**: everything after it leaves the
-video, and the next recording carries on from there. That is the whole editing
-model, and it is enough for a screencast — talk, fumble a line, back up a bit,
-carry on.
+A project is a list of **sittings** on disk and an **arrangement** over them.
+The sittings are the inventory — recorded whole, never modified. The arrangement
+says which piece of which sitting plays, and in what order. Everything you can
+do to a project is a change to the arrangement, which is why all of it is
+reversible: no edit has ever touched a file.
 
-**A trim is a number, not a deletion.** The segment holding that instant gets an
-`:out`; the ones after it are marked dropped; every file stays whole at its
-original length. So `undo trim` puts all of it back, and nothing you recorded is
-lost until you delete the project.
+Beside **Record** are three modes, and they say where the material from the next
+press will land.
+
+| mode | what it does |
+|---|---|
+| **Append** | on the end. The default, and what a screencast usually wants. |
+| **At playhead** | replaces everything from the playhead onward. |
+| **Insert** | spliced in at the playhead; what followed is kept and comes after. |
+
+The picker **resets to Append after every take**. A mode that quietly survives
+is a mode that eats a minute of material while you think you are adding to the
+end.
+
+**Nothing is rearranged until the sitting finishes.** The mode is written down
+when you press Record and applied when the audio lands, so a take that fails or
+is cancelled leaves the project exactly as it was. That is why replacing from
+the playhead is one action and not a trim followed by a record — a trim is
+reversible, but a half-done operation is still a bad thing to be handed.
+
+**Trim to playhead** is the fourth thing and needs no mode: park the playhead,
+press it, and the video stops there.
+
+`undo edits` clears the arrangement and puts the project back to plain appended
+sittings in the order they were recorded. An inserted sitting is not lost by
+that — it goes back to being the last one.
+
+## What a copy can and cannot do
 
 **None of this re-encodes.** The capture produces h264 with no B-frames and a
-keyframe about every 0.4 s, which makes two operations exact by stream copy:
-cutting a segment's tail, and joining segments end to end. So a project
-assembles in about the time it takes to read and write its bytes, and no
-generation of quality is lost however many times you trim it back and record on.
+keyframe about every 0.4 s, and every operation above is a stream copy. A
+project assembles in about the time it takes to read and write its bytes, and no
+generation of quality is lost however many times you cut it about.
 
-That asymmetry is *why* the model is append-and-trim rather than general
-cutting. Cutting from the middle would need a keyframe at the resume point and
-cutting from the start would snap to one; the tail does not.
+The asymmetry that shapes the whole model: **a copy can end anywhere, but it can
+only begin at a keyframe.** Every frame a cut keeps still has the frames it
+references, so cutting a tail is free and exact — which is why a trim and a
+replace are frame-accurate.
+
+An insert is not, because something has to *resume* after it. That cut lands on
+the nearest keyframe, up to about 0.2 s from where you asked, and the app tells
+you where it will really land rather than claiming an accuracy the format does
+not have: arm Insert and the position beside the picker is the snapped one.
+
+**The trap that costs a day if you get it wrong.** Audio has no keyframe
+constraint — a WAV cuts at any sample — so it is tempting to cut the sound at
+the requested time and let the picture snap to its keyframe. Do that and the two
+walk apart by up to a keyframe interval at every seam, and it accumulates. Both
+sides get the same snapped instant, and then the audio is trimmed to the video's
+*measured* length so a piece can never be the odd frame longer than its partner.
+
+Measured, on a real recording split at a keyframe and rejoined: same duration to
+the millisecond, same frame count, and subtracting the rejoined audio from the
+original leaves **max difference 0.000000**. A seam by stream copy costs
+nothing, which is exactly why the lanes have to draw one — see below.
+
+## Seams
+
+The lanes mark every join with a dashed tick. It is bookkeeping, not a handle:
+a join by stream copy leaves no mark you can see in the picture or hear in the
+sound, so this is the only place a project's construction is visible.
+
+After an insert there are more seams than sittings, because a sitting cut in two
+shows a seam at the cut as well as at its ends. The line under the player says
+so too — *3 sittings, 4 pieces*.
+
+## meta.edn
+
+```clojure
+:segments [{:n 1 :duration 19.633} {:n 2 :duration 17.133}]
+:clips    [{:seg 1 :out 8.0}
+           {:seg 2}                      ; the whole of it
+           {:seg 1 :in 8.0}]             ; the rest of the first sitting
+```
+
+**A project with no `:clips` reads as one clip per sitting.** So every project
+recorded before the arrangement existed still plays, nothing had to be migrated,
+and the first edit that writes one *is* the migration.
 
 Two things the assembly refuses rather than gets wrong. Stream-copy concat needs
 identical stream parameters, so if the screen changes size between sittings it
@@ -270,18 +335,14 @@ take you have exported costs roughly twice the disk until you delete it — and
 deleting the take takes it too. It is rebuilt on every request rather than
 cached, because the moment edits exist its contents depend on them.
 
-## Editing, when it comes
+## What is not built
 
-The shape is laid for it and none of it is built. `meta.edn` carries an
-`:edits []` that nothing reads yet, and the intent is that it stays a
-**non-destructive** list — cuts and gain moves described, never applied to the
-files, and replayed through ffmpeg only on export. The captured take stays the
-captured take.
+**Reordering pieces, and deleting from the middle.** The arrangement makes both
+straightforward — they are a `swap` and a `remove` on `:clips` — and neither is
+asked for, because a screencast is recorded roughly in order. Do not build them
+on spec.
 
-Export is where that replay belongs, and it is already the shape that expects
-it: `et.rec.export/edit-args` turns an edit list into ffmpeg arguments and
-currently returns nothing. When it returns something, no caller changes.
-
-The two things to build first are a filmstrip in the video lane, which is
-`ffmpeg -i video.mp4 -vf fps=1/2,scale=160:-1`, and multi-resolution peaks,
-because 8000 buckets is an overview and not a zoom.
+The two things that would actually help are a **filmstrip** in the video lane,
+which is `ffmpeg -i video.mp4 -vf fps=1/2,scale=160:-1`, and **multi-resolution
+peaks**, because 8000 buckets is an overview and not a zoom. Both are about
+seeing the timeline well enough to put the playhead where you meant to.

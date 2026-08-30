@@ -30,6 +30,41 @@
                   "-of" "default=nw=1:nk=1" (str file))]
     (when (zero? exit) (parse-double (str/trim out)))))
 
+(defonce ^:private keyframe-cache (atom {}))
+
+(defn keyframes
+  "Every keyframe time in a file's video stream, seconds, ascending.
+
+   **This is the list an insert has to obey.** A stream copy can *end* anywhere
+   — the frames it keeps still have the frames they reference — but it can only
+   *begin* at a keyframe, so any cut something has to resume from lands on one
+   of these. The capture writes one roughly every 0.4 s.
+
+   Cached by path and modification time, which is safe here for a reason
+   particular to this app: a segment's video.mp4 is written once when the
+   sitting ends and never touched again. That is the whole editing model, and
+   it is what makes the cache unable to go stale."
+  [file]
+  (let [f   (io/file (str file))
+        key [(.getAbsolutePath f) (.lastModified f)]]
+    (if-let [hit (get @keyframe-cache key)]
+      hit
+      (let [{:keys [out exit]}
+            (shell/sh "ffprobe" "-v" "error"
+                      "-select_streams" "v:0"
+                      "-skip_frame" "nokey"
+                      "-show_entries" "frame=pts_time"
+                      "-of" "csv=p=0"
+                      (str f))
+            ts (if (zero? exit)
+                 (->> (str/split-lines out)
+                      (keep #(parse-double (str/replace (str/trim %) "," "")))
+                      sort
+                      vec)
+                 [])]
+        (swap! keyframe-cache assoc key ts)
+        ts))))
+
 (defn audio-start-offset
   "How far into the recording the microphone's first sample sits.
 

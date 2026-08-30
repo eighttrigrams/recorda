@@ -79,15 +79,59 @@
                       :title "Re-measure the screens — needed after plugging a display in"}
       "rescan"]]))
 
+(defn- fmt-at [t]
+  (let [t (max 0 (or t 0))
+        m (js/Math.floor (/ t 60))
+        sec (js/Math.floor (mod t 60))]
+    (str m ":" (when (< sec 10) "0") sec "." (js/Math.floor (* 10 (mod t 1))))))
+
+(def modes
+  [[:append      "Append"      "New material goes on the end. The default, and what a screencast usually wants."]
+   [:at-playhead "At playhead" "Replace everything from the playhead onward. What was there stays on disk — undo brings it back."]
+   [:insert      "Insert"      "Splice in at the playhead and keep what followed. The cut lands on the nearest keyframe, within about 0.2 s."]])
+
+(defn mode-picker
+  "Where the next sitting lands.
+
+   It sits beside Record because it is a property of the press, not of the
+   project, and it resets to Append after every take — a mode that quietly
+   survives is a mode that eats material while you think you are adding to the
+   end."
+  []
+  (let [m (or (:record-mode @state/app) :append)]
+    [:div.mode-picker
+     (for [[k label title] modes]
+       ^{:key (name k)}
+       [:button.mode {:class    (when (= k m) "on")
+                      :disabled (state/busy?)
+                      :title    title
+                      :on-click #(swap! state/app assoc :record-mode k)}
+        label])
+     (when-not (= :append m)
+       [:span.mode-at
+        ;; While a take runs this is the server's answer — for an insert that
+        ;; is the keyframe it will really cut at, which is not always the one
+        ;; that was asked for. Saying the requested time here would be a small
+        ;; lie the format cannot honour.
+        (if-let [landed (:record-at @state/app)]
+          (str "at " (fmt-at landed))
+          (str "at " (fmt-at (:time @state/app))))])]))
+
 (defn record-button
   "Records another sitting onto the given project. There is no global record
    button: a project is one video, and recording is something you do inside
-   one — the first press is its opening, every later press appends."
+   one — the first press is its opening, and every later press lands where the
+   mode beside it says."
   [project-id]
   (let [rec?  (state/recording?)
         proc? (state/processing?)
         ready (get-in @state/app [:devices :ready?])
-        first? (zero? (or (:segment-count @state/app) 0))]
+        mode  (or (:record-mode @state/app) :append)
+        ;; Read off the project, not off a `:segment-count` nobody ever set —
+        ;; which is what this used to do, so the button said "Record" forever
+        ;; and every other label here was unreachable.
+        first? (empty? (remove #(or (:dropped %) (:pending %))
+                               (:segments (state/selected-take))))]
     [:div {:style {:display "flex" :align-items "center" :gap "12px"}}
      (when rec?
        (let [started (get-in @state/app [:status :started-at])]
@@ -99,7 +143,12 @@
                           :disabled (or proc? (and (not rec?) (or (not ready) (nil? project-id))))
                           :on-click #(if rec? (state/stop!) (state/start! project-id))}
       [:span.dot]
+      ;; The label says which of the three it is about to do, because the
+      ;; difference between adding to the end and replacing the end is not
+      ;; something to leave to a highlighted button elsewhere on the row.
       (cond rec?   "Stop"
             proc?  "Working"
             first? "Record"
+            (= :at-playhead mode) "Record over"
+            (= :insert mode)      "Record in"
             :else  "Record more")]]))

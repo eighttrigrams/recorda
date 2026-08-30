@@ -7,11 +7,12 @@
    happens, so that the pair on disk stays the master and the mp4 stays a
    derivative you can throw away and remake.
 
-   **This is also where editing will land.** A take's `:edits` is meant to stay
-   a non-destructive list — cuts and gain moves described rather than applied —
-   and replaying it belongs here, in the one step that already reads both
-   tracks and writes something new. Nothing reads it yet; the argument is
-   threaded through so that when it does, no caller changes."
+   Editing does *not* land here, in the end. Cuts and splices live in the
+   project's `:clips` and are resolved by et.rec.assemble, so that what you play
+   is exactly what you export — an edit visible only in the export would be an
+   edit you could not review. What is left for this step is the crop, which is
+   genuinely an output setting: it changes the frame you hand out and not the
+   footage you keep."
   (:require [et.rec.ff :as ff]
             [et.rec.store :as store]))
 

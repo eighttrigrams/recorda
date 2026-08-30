@@ -15,9 +15,12 @@
      meta.edn                 everything else, including the segment list
      ffmpeg.log               what the last capture said while it ran
 
-   **Trimming is a number, not a deletion.** A segment carries an `:out`, and
-   the file behind it keeps its full length — so a trim can always be pulled
-   back out, and nothing recorded is lost until the project is deleted.
+   **Editing is an arrangement, not a deletion.** `:segments` is the inventory;
+   `:clips` is the edit list over it, saying which piece of which segment plays
+   and in what order. Every file stays whole whatever the arrangement says, so
+   an edit can always be pulled back out, and nothing recorded is lost until the
+   project is deleted. A project with no `:clips` reads as one clip per live
+   segment, which is why nothing had to be migrated when they arrived.
 
    No SQLite, unlike every sibling in this workspace. There is one user, the
    rows are files, and every query this app has is `ls`. A database here would
@@ -85,15 +88,88 @@
 (defn drop-segment! [id n]
   (update-meta! id update :segments (fn [ss] (filterv #(not= n (:n %)) ss))))
 
-(defn segment-span
-  "Each live segment with the assembly time it starts at and its effective
-   length, so a position on the timeline can be resolved to a segment."
+(defn segment-duration [id n]
+  (some #(when (= n (:n %)) (:duration %)) (:segments (read-meta id))))
+
+;; --- the arrangement -------------------------------------------------------
+;;
+;; `:segments` is the inventory: what was recorded, never modified. `:clips` is
+;; the arrangement over it — which piece of which segment plays, in what order.
+;; Keeping them apart is what lets one segment appear twice, cut at different
+;; points, with the file behind it still exactly as it came out of the capture.
+
+(defn- normalise-clip
+  "A stored clip resolved against the segment it names, with both bounds
+   filled in. Answers nil for a clip whose segment is gone or whose bounds
+   leave nothing to play, so a broken entry drops out of the arrangement
+   instead of failing the assembly."
+  [live {:keys [seg in out]}]
+  (when-let [s (get live seg)]
+    (let [d   (double (or (:duration s) 0.0))
+          in  (max 0.0 (double (or in 0.0)))
+          out (min d (double (or out d)))]
+      (when (> out (+ in 0.01))
+        {:seg    seg
+         :in     in
+         :out    out
+         :whole? (and (< in 0.001) (> out (- d 0.001)))}))))
+
+(defn clips
+  "The arrangement: which piece of which segment plays, and in what order.
+
+   **A project with no `:clips` reads as one clip per live segment**, honouring
+   the `:out` a trim left on it. So every project recorded before clips existed
+   has an arrangement without anything being migrated, and the first edit that
+   writes one *is* the migration."
   [id]
-  (loop [[s & more] (segments id) at 0.0 acc []]
-    (if (nil? s)
+  (let [m    (read-meta id)
+        segs (segments id)
+        live (into {} (map (juxt :n identity)) segs)]
+    (if-let [cs (seq (:clips m))]
+      (into [] (keep #(normalise-clip live %)) cs)
+      (into [] (keep #(normalise-clip live {:seg (:n %) :out (or (:out %) (:duration %))}))
+            segs))))
+
+(defn strip-clip
+  "A clip as it is written to meta.edn: bounds only where they are not the
+   segment's own, so the common case stays `{:seg 2}` and the file stays
+   something a person can read."
+  [{:keys [seg in out whole?]}]
+  (let [r #(/ (Math/round (* 1.0e6 (double %))) 1.0e6)]
+    (cond-> {:seg seg}
+      (> (double (or in 0.0)) 0.001) (assoc :in (r in))
+      (and out (not whole?))         (assoc :out (r out)))))
+
+(defn set-clips!
+  "Write the arrangement.
+
+   Also clears the `:out` and `:dropped` a pre-clips trim left on the segments,
+   so the two ways of saying the same thing never both exist: once there is an
+   arrangement, `:segments` is inventory and nothing else."
+  [id cs]
+  (update-meta! id (fn [m]
+                     (-> m
+                         (assoc :clips (mapv #(if (:whole? %) (strip-clip %) %) cs))
+                         (update :segments (fn [ss] (mapv #(dissoc % :out :dropped) ss)))))))
+
+(defn clear-clips!
+  "Back to plain appended segments. Possible at all because editing only ever
+   wrote an arrangement — every file is still whole and still there."
+  [id]
+  (update-meta! id (fn [m]
+                     (-> m
+                         (dissoc :clips)
+                         (update :segments (fn [ss] (mapv #(dissoc % :out :dropped) ss)))))))
+
+(defn clip-span
+  "Each clip with the assembly time it starts at and its length, so a position
+   on the timeline can be resolved to a place inside a segment."
+  [id]
+  (loop [[c & more] (clips id) at 0.0 acc []]
+    (if (nil? c)
       acc
-      (let [len (or (:out s) (:duration s) 0.0)]
-        (recur more (+ at len) (conj acc (assoc s :starts-at at :length len)))))))
+      (let [len (- (:out c) (:in c))]
+        (recur more (+ at len) (conj acc (assoc c :starts-at at :length len)))))))
 
 (defn list-recordings
   "Newest first. A directory without a readable meta.edn is skipped rather than
@@ -107,11 +183,22 @@
        reverse
        vec))
 
+(defn- delete-tree! [^java.io.File f]
+  (when (.isDirectory f)
+    (doseq [c (.listFiles f)] (delete-tree! c)))
+  (io/delete-file f true))
+
 (defn delete!
-  "Remove a take and everything in it."
+  "Remove a take and everything in it.
+
+   **Depth first.** This used to delete the top level and then try the
+   directory, which java.io.File refuses while anything is still inside it —
+   and `io/delete-file` with the silent flag swallows the refusal. So meta.edn
+   went, the project vanished from the library because a directory without one
+   is skipped, and every segment stayed on the disk for good. A delete that
+   reports success and leaves the video behind is the worst of both."
   [id]
   (let [d (dir id)]
     (when (and (.exists d) (.isDirectory d))
-      (doseq [f (.listFiles d)] (io/delete-file f true))
-      (io/delete-file d true)
-      true)))
+      (delete-tree! d)
+      (not (.exists d)))))

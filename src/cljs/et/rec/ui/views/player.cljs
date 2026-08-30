@@ -112,8 +112,41 @@
 
 ;; --- the lanes -------------------------------------------------------------
 
-(defn- lanes []
-  (let [peaks (:peaks @state/app)]
+(defn- seams
+  "Where one piece of recording meets another, in seconds.
+
+   Bookkeeping, not an edit handle: it is the one thing about a project you
+   cannot see from the picture or hear from the sound, because a join by stream
+   copy leaves no mark. After an insert there are more of these than there are
+   sittings — a segment cut in two shows a seam at the cut as well as at its
+   ends — which is exactly the thing worth being able to look at.
+
+   Computed from the arrangement when there is one and from the sittings when
+   there is not, so it reads the same before and after the first edit. The last
+   boundary is dropped: the end of the video is not a seam."
+  [take]
+  (let [durs (into {} (map (juxt :n :duration)) (:segments take))
+        cs   (if (seq (:clips take))
+               (:clips take)
+               (->> (:segments take)
+                    (remove :dropped) (remove :pending) (sort-by :n)
+                    (map (fn [s] {:seg (:n s) :out (or (:out s) (:duration s))}))))]
+    (->> cs
+         (reduce (fn [{:keys [at acc]} c]
+                   (let [d   (or (get durs (:seg c)) 0)
+                         end (+ at (- (or (:out c) d) (or (:in c) 0)))]
+                     {:at end :acc (conj acc end)}))
+                 {:at 0 :acc []})
+         :acc
+         butlast)))
+
+(defn- lanes [take]
+  (let [peaks (:peaks @state/app)
+        dur   (or (:duration take) 0)
+        ;; The playhead is the answer to "where will the new material go", so
+        ;; when the next press is not a plain append it says so rather than
+        ;; leaving the mode picker to carry that on its own.
+        armed (not= :append (or (:record-mode @state/app) :append))]
     [:div.lanes
      [:div.lane.lane-video
       [:div.lane-label "Video"]
@@ -125,7 +158,16 @@
        (if peaks
          [waveform (:peaks peaks)]
          [:div.empty {:style {:padding "8px"}} "reading waveform…"])]]
-     [:div.playhead {:ref #(reset! playhead-el %) :style {:left "58px"}}]]))
+     ;; Positioned exactly the way the playhead is, so a seam and the playhead
+     ;; sitting on the same instant land on the same pixel.
+     (when (pos? dur)
+       (for [t (seams take)]
+         ^{:key (str t)}
+         [:div.seam {:style {:left (str "calc(58px + (100% - 58px) * " (/ t dur) ")")}
+                     :title (str "join at " (fmt t))}]))
+     [:div.playhead {:ref   #(reset! playhead-el %)
+                     :class (when armed "armed")
+                     :style {:left "58px"}}]]))
 
 (defn- video-geometry
   "Where the picture is actually painted, and how many video pixels one CSS
@@ -218,8 +260,13 @@
                                    :width  (* (:w crop) inv)
                                    :height (* (:h crop) inv)}}])]))
 
-(defn- trimmed? [take]
-  (boolean (some #(or (:out %) (:dropped %)) (:segments take))))
+(defn- edited?
+  "Whether the project has an arrangement of its own rather than the plain
+   appended reading. True after a trim, a replace or an insert — all three are
+   the same kind of thing to undo."
+  [take]
+  (boolean (or (seq (:clips take))
+               (some #(or (:out %) (:dropped %)) (:segments take)))))
 
 (defn player
   "The project pane: what this video is, and everything you do to it.
@@ -232,7 +279,7 @@
     (if-not take
       [:div.panel [:div.empty "Pick a project on the left, or make a new one."]]
       (let [id    (:id take)
-            ver   (str (:duration take))
+            ver   (state/version take)
             estate @engine/state
             ready? (:ready? estate)
             empty? (or (= "empty" (:status take)) (nil? (:duration take)))]
@@ -243,6 +290,8 @@
                 :title "Click to rename"}
            (:title take)]
           [:div.spacer]
+          (when-not (or (= "empty" (:status take)) (nil? (:duration take)))
+            [recorder/mode-picker])
           [recorder/record-button id]]
 
          (if empty?
@@ -276,11 +325,11 @@
                        :disabled (or (state/busy?) (< (:time @state/app) 0.1))
                        :title "Cut everything after the playhead; the next recording carries on from here"}
               "Trim to playhead"]
-             (when (trimmed? take)
+             (when (edited? take)
                [:button.danger {:on-click (fn [_] (state/untrim! id))
                                 :disabled (state/busy?)
-                                :title "Put every trim and every dropped sitting back"}
-                "undo trim"])
+                                :title "Back to plain appended sittings, in the order they were recorded. Nothing was ever deleted, so this can always be pressed."}
+                "undo edits"])
              [:button {:class (when @crop-mode "recording")
                        :on-click (fn [_] (swap! crop-mode not) (reset! crop-drag nil))
                        :title "Drag a box on the picture; the export is cropped to it"}
@@ -290,11 +339,16 @@
              [:button {:on-click (fn [_] (state/export! id))
                        :disabled (:exporting? @state/app)}
               (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
-            [lanes]
+            [lanes take]
             [:div.meta-line
              [:span (:width take) "×" (:height take)]
-             (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))]
-               [:span (if (= 1 live) "one sitting" (str live " sittings"))])
+             (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))
+                   cl   (count (:clips take))]
+               [:span (if (= 1 live) "one sitting" (str live " sittings"))
+                ;; More clips than sittings means a sitting was cut in two by
+                ;; an insert, which is worth seeing: it is the only place the
+                ;; arrangement stops being one-piece-per-recording.
+                (when (> cl live) (str ", " cl " pieces"))])
              (when-let [c (:crop take)]
                [:span "crop " (:w c) "×" (:h c) " — applied on export"])
              (when-let [db (:peak-dbfs take)]

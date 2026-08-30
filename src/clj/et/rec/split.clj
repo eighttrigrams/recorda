@@ -55,7 +55,8 @@
     (io/delete-file uploaded true)
     (if-not (:ok? res)
       (do (store/drop-segment! id n)
-          (store/update-meta! id assoc :status :failed :error (:log res))
+          (store/update-meta! id #(-> (dissoc % :pending-op)
+                                      (assoc :status :failed :error (:log res))))
           {:ok? false :error (:log res)})
       (do
         (store/complete-segment! id n dur)
@@ -64,4 +65,11 @@
         (when-not (config/get-conf :keep-capture? false)
           (io/delete-file (store/segment-file id n "capture.mkv") true))
         (store/update-meta! id assoc :audio-lead lead :audio-source "browser")
+        ;; **Now** the arrangement moves, and not a moment earlier. The mode was
+        ;; written down when the sitting started; this is the first point at
+        ;; which there is something to place, and a sitting that got this far
+        ;; cannot fail in a way that leaves the project half-edited.
+        (let [op (:pending-op (store/read-meta id))]
+          (store/update-meta! id dissoc :pending-op)
+          (assemble/place! id n op))
         (assemble/assemble! id)))))

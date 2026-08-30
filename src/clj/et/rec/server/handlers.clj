@@ -50,15 +50,38 @@
                            :title      (or (not-empty (get-in req [:body :title])) id)
                            :created-at (str (java.time.Instant/now))
                            :status     :empty
-                           :segments   []
-                           :edits      []})
+                           ;; No :clips. A project without an arrangement reads
+                           ;; as one clip per segment, so the empty case needs
+                           ;; nothing said about it and the first edit is the
+                           ;; only thing that ever writes one.
+                           :segments   []})
     {:status 201 :body (store/read-meta id)}))
 
 (defn start-handler
   "POST /api/recordings/:id/record/start — record another sitting onto this
-  project. The first one is its opening; every later one is appended."
+  project. The first one is its opening; every later one lands where `mode`
+  says.
+
+  `mode` is `append` (the default — on the end), `at-playhead` (replaces
+  everything from `at` seconds onward) or `insert` (spliced in at `at`, keeping
+  what followed). `at` is a position on the assembly timeline.
+
+  **Nothing is rearranged until the sitting finishes.** The mode is written down
+  and applied when the audio lands, so a take that fails or is cancelled leaves
+  the project exactly as it was — which is why replacing from the playhead is
+  one call and not a trim followed by a record.
+
+  For `insert` the answer's `at` is the *snapped* position: a copy can only
+  resume at a keyframe, so the cut lands on the nearest one and the caller is
+  told where that is rather than being left to claim an accuracy the format
+  does not have."
   [req]
-  (let [r (capture/start! (get-in req [:params :id]))]
+  (let [mode (or (get-in req [:params "mode"])
+                 (some-> (get-in req [:body :mode]) name))
+        at   (or (some-> (get-in req [:params "at"]) parse-double)
+                 (some-> (get-in req [:body :at]) double))
+        r    (capture/start! (get-in req [:params :id])
+                             {:mode (some-> mode keyword) :at at})]
     (if (:error r) (bad r) (ok r))))
 
 (defn stop-handler
@@ -132,9 +155,9 @@
   "POST /api/recordings/:id/trim — cut the project's tail at `at` seconds on the
   assembly timeline, so the next sitting carries on from there.
 
-  Nothing is thrown away: the segment holding that instant gets an `:out` and
-  the ones after it are marked dropped, while every file stays whole. A trim can
-  be undone."
+  Frame-accurate, because a tail cut needs no keyframe — a stream copy can end
+  anywhere. Nothing is thrown away either: the arrangement stops there and every
+  file stays whole, so a trim can be undone."
   [req]
   (let [id (get-in req [:params :id])
         ;; Query params arrive from wrap-params string-keyed, while compojure's
@@ -149,8 +172,12 @@
               (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn untrim-handler
-  "POST /api/recordings/:id/untrim — clear every trim and bring back every
-  dropped sitting. Possible because trimming only ever wrote a number."
+  "POST /api/recordings/:id/untrim — clear every edit: back to plain appended
+  sittings, in the order they were recorded.
+
+  Possible because editing only ever wrote an arrangement over the segments and
+  never touched a file. An inserted sitting is not lost by this — it goes back
+  to being the last one."
   [req]
   (let [id (get-in req [:params :id])]
     (if (nil? (store/read-meta id))

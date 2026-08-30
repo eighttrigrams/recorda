@@ -18,7 +18,8 @@
    So the microphone is captured in the browser instead — see et.rec.ui.mic —
    which loses 91 ms in five minutes rather than 11% in every second. What is
    left here is the screen, which ffmpeg captures perfectly well."
-  (:require [et.rec.config :as config]
+  (:require [et.rec.assemble :as assemble]
+            [et.rec.config :as config]
             [et.rec.devices :as devices]
             [et.rec.ff :as ff]
             [et.rec.split :as split]
@@ -28,10 +29,12 @@
 (defonce ^:private *state (atom {:status :idle}))
 
 (defn status []
-  (let [{:keys [status id segment started-at video-started-at screen error]} @*state]
+  (let [{:keys [status id segment mode at started-at video-started-at screen error]} @*state]
     (cond-> {:status status}
       id               (assoc :id id)
       segment          (assoc :segment segment)
+      mode             (assoc :mode mode)
+      at               (assoc :at at)
       started-at       (assoc :started-at started-at
                               :elapsed (/ (- (System/currentTimeMillis) started-at) 1000.0))
       video-started-at (assoc :video-started-at video-started-at)
@@ -71,49 +74,82 @@
         (> (System/currentTimeMillis) deadline) (System/currentTimeMillis)
         :else (do (Thread/sleep 15) (recur))))))
 
+(def modes
+  "Where a sitting's material goes when it is finished.
+
+   `:append` puts it on the end and is the default — a screencast is recorded
+   roughly in order, and this is what pressing Record means most of the time.
+   `:at-playhead` replaces everything from `:at` onward. `:insert` splices it in
+   at `:at` and keeps what followed."
+  #{:append :at-playhead :insert})
+
 (defn start!
   "Begin recording a new **segment** of the given project.
 
    A project is one video built over as many sittings as it takes; this is one
    sitting. The segment is captured whole into its own directory and never
-   modified afterwards — trimming and joining happen in the assembly, so
-   pressing record can only ever add.
+   modified afterwards — every edit happens in the arrangement, so pressing
+   record can only ever add a file.
+
+   Where the material *lands* is decided by the mode, and **written down rather
+   than acted on**. Replacing from the playhead is not a trim followed by a
+   record: the arrangement is left alone until the sitting has actually
+   produced something, so a take that fails leaves the project untouched. For
+   `:insert` the position is snapped to a keyframe here, and the snapped one is
+   what comes back, so the caller can move its playhead to where the cut will
+   really land.
 
    Returns the status, including `video-started-at` — the epoch millisecond at
    which frames actually began — so the caller can line its own audio up with
    it."
-  [project-id]
-  (locking *state
-    (cond
-      (not= :idle (:status @*state))
-      {:error (str "already " (name (:status @*state)))}
+  ([project-id] (start! project-id nil))
+  ([project-id {:keys [mode at]}]
+   (locking *state
+     (let [mode (or (modes (keyword mode)) :append)
+           at   (double (or at 0.0))]
+       (cond
+         (not= :idle (:status @*state))
+         {:error (str "already " (name (:status @*state)))}
 
-      (nil? (store/read-meta project-id))
-      {:error "no such project"}
+         (nil? (store/read-meta project-id))
+         {:error "no such project"}
 
-      :else
-      (let [conf   (config/config)
-            screen (devices/resolve-screen (:screen conf))]
-        (if (or (nil? screen) (:error screen))
-          {:error (or (:error screen) "no screen found")}
-          (let [n   (store/next-segment-n project-id)
-                dir (doto (store/segment-dir project-id n) (.mkdirs))
-                mkv (java.io.File. ^java.io.File dir "capture.mkv")
-                log (java.io.File. ^java.io.File (store/dir project-id) "ffmpeg.log")
-                p   (ff/spawn (capture-args screen dir) log)
-                vat (await-first-frames! mkv 5000)]
-            (store/add-segment! project-id n)
-            (store/update-meta! project-id assoc :status :recording)
-            (reset! *state {:status :recording
-                            :id project-id
-                            :segment n
-                            :proc p
-                            :started-at (System/currentTimeMillis)
-                            :video-started-at vat
-                            :screen screen})
-            (t/log! :info (str "recording " project-id " segment " n
-                               " from " (:name screen)))
-            (status)))))))
+         :else
+         (let [conf   (config/config)
+               screen (devices/resolve-screen (:screen conf))]
+           (if (or (nil? screen) (:error screen))
+             {:error (or (:error screen) "no screen found")}
+             (let [at  (if (= :insert mode)
+                         ;; Rounded to the microsecond: the answer goes into
+                         ;; meta.edn and back to the browser, and neither wants
+                         ;; to read 6.066000000000001.
+                         (/ (Math/round (* 1.0e6 (assemble/landing-point project-id at))) 1.0e6)
+                         at)
+                   n   (store/next-segment-n project-id)
+                   dir (doto (store/segment-dir project-id n) (.mkdirs))
+                   mkv (java.io.File. ^java.io.File dir "capture.mkv")
+                   log (java.io.File. ^java.io.File (store/dir project-id) "ffmpeg.log")
+                   p   (ff/spawn (capture-args screen dir) log)
+                   vat (await-first-frames! mkv 5000)]
+               (store/add-segment! project-id n)
+               (store/update-meta! project-id assoc
+                                   :status :recording
+                                   :pending-op {:mode mode :at at})
+               (reset! *state {:status :recording
+                               :id project-id
+                               :segment n
+                               :mode mode
+                               :at at
+                               :proc p
+                               :started-at (System/currentTimeMillis)
+                               :video-started-at vat
+                               :screen screen})
+               (t/log! :info (str "recording " project-id " segment " n
+                                  " from " (:name screen)
+                                  " (" (name mode)
+                                  (when-not (= :append mode) (str " at " (format "%.3f" at)))
+                                  ")"))
+               (status)))))))))
 
 (defn stop!
   "End the sitting and produce the segment's video. The segment then waits for
@@ -135,7 +171,11 @@
             (if (:ok? res)
               {:status :awaiting-audio :id id :segment segment :duration (:duration res)}
               (do (store/drop-segment! id segment)
-                  (store/update-meta! id assoc :status :failed :error (:error res))
+                  ;; The mode was an intention about a sitting that no longer
+                  ;; exists. Leaving it written down would apply it to the next
+                  ;; one, which is nobody's idea of what should happen.
+                  (store/update-meta! id #(-> (dissoc % :pending-op)
+                                              (assoc :status :failed :error (:error res))))
                   (reset! *state {:status :idle})
                   {:error (str "segment video failed: " (:error res))}))))))))
 

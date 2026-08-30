@@ -14,6 +14,11 @@
            :time       0.0
            :duration   0.0
            :playing?   false
+           ;; Where the next sitting lands. Deliberately **not sticky**: it goes
+           ;; back to :append after every take, because a mode that quietly
+           ;; survives is a mode that eats the next recording's worth of
+           ;; material while you think you are adding to the end.
+           :record-mode :append
            :error      nil}))
 
 (defn recording? [] (= "recording" (get-in @app [:status :status])))
@@ -39,16 +44,24 @@
   (api/GET (str "/media/" id "/peaks.json?v=" (js/Date.now))
            #(when (= id (:selected @app)) (swap! app assoc :peaks %))))
 
+(defn version
+  "What every cached thing about a project is keyed on.
+
+   `:rev` counts assemblies. The duration used to serve as the version on its
+   own, and mostly did — but replacing from the playhead can land on the same
+   length it started at, and then the tab goes on playing the file it already
+   had. Counting rebuilds cannot collide that way."
+  [take]
+  (str (or (:rev take) 0) "-" (or (:duration take) 0)))
+
 (defn select! [id]
-  (swap! app assoc :selected id :time 0.0 :playing? false
-         :duration (or (:duration (first (filter (fn [r] (= id (:id r)))
-                                                 (:recordings @app)))) 0.0))
-  ;; Decoding the whole thing up front is what buys playback that cannot stall.
-  ;; The version is the assembly's duration: it changes whenever a sitting is
-  ;; appended or a trim moves, which is exactly when the audio must be reloaded.
-  (engine/load! id (str (:duration (first (filter (fn [r] (= id (:id r)))
-                                                  (:recordings @app))))))
-  (fetch-peaks! id))
+  (let [take (first (filter (fn [r] (= id (:id r))) (:recordings @app)))]
+    (swap! app assoc :selected id :time 0.0 :playing? false
+           :duration (or (:duration take) 0.0))
+    ;; Decoding the whole thing up front is what buys playback that cannot
+    ;; stall.
+    (engine/load! id (version take))
+    (fetch-peaks! id)))
 
 ;; --- the take --------------------------------------------------------------
 
@@ -76,14 +89,15 @@
                                    "X-Audio-Lead-Ms" (str lead-ms)}
                      :body    buffer})
       (.then (fn [res]
-               (swap! app assoc :uploading? false)
+               ;; Back to appending. See :record-mode above.
+               (swap! app assoc :uploading? false :record-mode :append :record-at nil)
                (when-not (.-ok res)
                  (swap! app assoc :error "the server would not take the audio"))
                (fetch-recordings!)
                (fetch-status!)
                (select! (:selected @app))))
       (.catch (fn [e]
-                (swap! app assoc :uploading? false
+                (swap! app assoc :uploading? false :record-mode :append :record-at nil
                        :error (str "could not send the audio: " e))
                 (fetch-status!)))))
 
@@ -106,7 +120,9 @@
             #(swap! app assoc :error (or (get-in % [:response :error]) "could not trim"))))
 
 (defn untrim!
-  "Put every trim and every dropped sitting back."
+  "Clear every edit: back to plain appended sittings, in the order they were
+   recorded. An inserted sitting goes back to being the last one — it is not
+   lost, because nothing ever moved but the arrangement."
   [id]
   (api/POST (str "/api/recordings/" id "/untrim")
             (fn [_] (fetch-recordings!) (select! id))
@@ -122,23 +138,36 @@
 
    The server answers with `video-started-at`, the instant frames actually
    began, and the difference between that and the moment audio went live is the
-   lead that gets trimmed off the front of the recording when it is uploaded."
+   lead that gets trimmed off the front of the recording when it is uploaded.
+
+   **Where it lands is decided now and applied later.** The mode and the
+   playhead go with the request, the server writes them down, and the
+   arrangement only moves once the sitting has produced something — so a take
+   that fails leaves the project as it was. For an insert the server answers
+   with the position it will really cut at, which is the nearest keyframe and
+   not necessarily the one asked for."
   [project-id]
-  (swap! app assoc :error nil :audio-live-ms nil)
-  ;; A monitor holds the same device; take it back before recording.
-  (mic/stop-monitor!)
-  (mic/start!
-    (get-in @app [:devices :chosen-mic :name])
-    ;; on-live: sound is really flowing, so now start the picture
-    (fn [live-ms]
-      (swap! app assoc :audio-live-ms live-ms)
-      (api/POST (str "/api/recordings/" project-id "/record/start")
-                (fn [st] (swap! app assoc :status st))
-                (fn [e]
-                  (mic/cancel!)
-                  (swap! app assoc :error (or (get-in e [:response :error])
-                                              "could not start the screen capture")))))
-    (fn [e] (swap! app assoc :error (str "microphone: " e)))))
+  (let [mode (or (:record-mode @app) :append)
+        at   (if (= :append mode) 0.0 (:time @app))]
+    (swap! app assoc :error nil :audio-live-ms nil :record-at nil)
+    ;; A monitor holds the same device; take it back before recording.
+    (mic/stop-monitor!)
+    (mic/start!
+      (get-in @app [:devices :chosen-mic :name])
+      ;; on-live: sound is really flowing, so now start the picture
+      (fn [live-ms]
+        (swap! app assoc :audio-live-ms live-ms)
+        (api/POST (str "/api/recordings/" project-id "/record/start"
+                       "?mode=" (name mode) "&at=" at)
+                  (fn [st]
+                    (swap! app assoc :status st)
+                    (when-not (= :append mode)
+                      (swap! app assoc :record-at (:at st))))
+                  (fn [e]
+                    (mic/cancel!)
+                    (swap! app assoc :error (or (get-in e [:response :error])
+                                                "could not start the screen capture")))))
+      (fn [e] (swap! app assoc :error (str "microphone: " e))))))
 
 (defn stop!
   "End the take: stop the picture, then hand over the sound."

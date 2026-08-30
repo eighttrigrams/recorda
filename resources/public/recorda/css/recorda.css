@@ -196,3 +196,49 @@ body { max-width: 1600px; }
   pointer-events: none;
 }
 .crop-box.set { border-style: dashed; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.30); }
+
+/* --- where the next sitting lands ----------------------------------------
+
+   Three small buttons beside Record. The picker resets to Append after every
+   take, so what it shows is always about the press that is coming, never a
+   setting left over from the last one. */
+
+.mode-picker { display: flex; align-items: center; gap: 4px; }
+.mode-picker .mode {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--input-border);
+  padding: 5px 10px; font-size: 0.8em; border-radius: 7px;
+}
+.mode-picker .mode:hover:not(:disabled) { background: var(--surface-subtle); }
+.mode-picker .mode.on {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent); color: var(--text-primary); font-weight: 600;
+}
+.mode-picker .mode:disabled { opacity: 0.4; }
+.mode-at {
+  font-size: 0.78em; color: var(--accent);
+  font-variant-numeric: tabular-nums; margin-left: 4px;
+}
+
+/* Armed: the next press does not simply add to the end, so the playhead —
+   which is *where* it will go — stops looking like an ordinary cursor. */
+.playhead.armed { background: var(--accent); width: 3px; }
+.playhead.armed::before { border-top-color: var(--accent); }
+.playhead.armed::after {
+  content: ''; position: absolute; inset: 0;
+  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* A join between two pieces of recording. Dashed and dim, because it is
+   bookkeeping and not something to act on — and because the one thing it must
+   never be mistaken for is the playhead. */
+.seam {
+  position: absolute; top: 0; bottom: 0; width: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--text-primary) 45%, transparent);
+  pointer-events: none; z-index: 2;
+}
+.seam::before {
+  content: ''; position: absolute; top: -3px; left: -3px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: color-mix(in srgb, var(--text-primary) 45%, transparent);
+}
