@@ -359,3 +359,23 @@ body { max-width: 1600px; }
 }
 .levels-note { font-size: 0.78em; color: var(--muted-text); }
 .sample-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+/* The grip on a clip's right edge. Shortening is reversible — the file is
+   never what gets shortened — so this needs no confirm, unlike everything
+   that removes something. */
+.lane-import .lane-body { height: 40px; }
+.music-grip {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 8px;
+  cursor: ew-resize; background: transparent;
+  border-right: 3px solid transparent;
+}
+.music-clip:hover .music-grip { border-right-color: var(--accent); }
+.music-grip:hover { border-right-color: var(--text-primary); }
+/* The FX lane reads differently from the bed, because its clips are short and
+   land against a cut rather than under everything. */
+.lane-fx .music-clip {
+  background: color-mix(in srgb, var(--record) 26%, transparent);
+  border-color: var(--record);
+}
+.lane-fx .music-clip:hover { background: color-mix(in srgb, var(--record) 38%, transparent); }
+.lane-fx .music-clip:hover .music-grip { border-right-color: var(--record); }

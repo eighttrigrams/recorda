@@ -28,6 +28,7 @@
 (defonce ^:private gain (atom nil))          ;; master
 (defonce ^:private voice-gain (atom nil))
 (defonce ^:private music-gain (atom nil))
+(defonce ^:private fx-gain (atom nil))
 (defonce ^:private source (atom nil))        ;; the voice, which owns the clock
 (defonce ^:private music-sources (atom []))
 (defonce ^:private music-buffers (atom {}))  ;; file -> AudioBuffer
@@ -53,7 +54,8 @@
       (let [c  (js/AudioContext.)
             g  (.createGain c)
             vg (.createGain c)
-            mg (.createGain c)]
+            mg (.createGain c)
+            fg (.createGain c)]
         ;; Two lanes into one master, so a slider is a gain node and not a
         ;; number applied to samples. The voice keeps the clock either way —
         ;; music hangs off the same context and is scheduled against it, never
@@ -61,7 +63,9 @@
         (.connect g (.-destination c))
         (.connect vg g)
         (.connect mg g)
-        (reset! gain g) (reset! voice-gain vg) (reset! music-gain mg)
+        (.connect fg g)
+        (reset! gain g) (reset! voice-gain vg)
+        (reset! music-gain mg) (reset! fx-gain fg)
         (reset! ctx c)
         c)))
 
@@ -69,10 +73,11 @@
   "How loud each lane plays. The same numbers the export uses — a balance set
    by ear against the preview and then undone on the way out would be worse
    than no slider at all."
-  [voice music]
+  [voice music fx]
   (ensure-ctx!)
   (when-let [v @voice-gain] (set! (.-value (.-gain v)) (double (or voice 1.0))))
-  (when-let [m @music-gain] (set! (.-value (.-gain m)) (double (or music 1.0)))))
+  (when-let [m @music-gain] (set! (.-value (.-gain m)) (double (or music 1.0))))
+  (when-let [f @fx-gain]    (set! (.-value (.-gain f)) (double (or fx 1.0)))))
 
 (defn duration [] (if-let [b (:buf @loaded)] (.-duration b) 0))
 
@@ -147,14 +152,21 @@
           (vec (keep (fn [clip]
                        (when-let [b (get @music-buffers (:file clip))]
                          (let [at (double (or (:at clip) 0.0))
-                               d  (.-duration b)]
+                               ;; How much of the file plays, not how long the
+                               ;; file is. A shortened clip stops where its end
+                               ;; was dragged to, and the samples past that are
+                               ;; still there to be dragged back out.
+                               d  (min (.-duration b)
+                                       (double (or (:out clip) (.-duration b))))]
                            (when (> (+ at d) pos)
-                             (let [src (.createBufferSource c)]
+                             (let [src  (.createBufferSource c)
+                                   fx?  (= "fx" (name (or (:lane clip) "music")))
+                                   into (if fx? @fx-gain @music-gain)]
                                (set! (.-buffer src) b)
-                               (.connect src @music-gain)
+                               (.connect src into)
                                (if (>= at pos)
-                                 (.start src (+ at-time (- at pos)) 0)
-                                 (.start src at-time (- pos at)))
+                                 (.start src (+ at-time (- at pos)) 0 d)
+                                 (.start src at-time (- pos at) (- d (- pos at))))
                                src)))))
                      @music-clips))))
 

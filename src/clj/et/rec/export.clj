@@ -81,7 +81,10 @@
   [meta ^java.io.File audio]
   (let [clips (vec (:music meta))
         vg    (double (or (:voice-gain meta) 1.0))
-        mg    (double (or (:music-gain meta) 1.0))
+        gain-of (fn [c] (double (or (if (= :fx (keyword (or (:lane c) :music)))
+                                      (:fx-gain meta)
+                                      (:music-gain meta))
+                                    1.0)))
         fmt   "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"]
     (when (or (seq clips) (not= 1.0 vg))
       (let [labels (cons "[v]" (map #(str "[m" % "]") (range (count clips))))
@@ -92,10 +95,14 @@
                              ;; it delays every channel rather than only the
                              ;; first — without it a stereo clip comes out with
                              ;; one side early.
-                             (format "[%d:a]adelay=%d:all=1,volume=%.4f,%s[m%d]"
+                             ;; atrim first, and the timestamps reset after it,
+                             ;; or adelay would be delaying a stream that still
+                             ;; thinks it starts where it was cut from.
+                             (format "[%d:a]atrim=end=%.4f,asetpts=PTS-STARTPTS,adelay=%d:all=1,volume=%.4f,%s[m%d]"
                                      (+ i 2)
+                                     (double (or (:out c) (:duration c) 0.0))
                                      (long (Math/round (* 1000.0 (double (:at c 0.0)))))
-                                     mg fmt i))
+                                     (gain-of c) fmt i))
                            clips))]
         {:inputs (mapcat (fn [c] ["-i" (str (io/file (io/file (.getParentFile audio) "music")
                                                      (:file c)))])

@@ -55,9 +55,11 @@
   (str (or (:rev take) 0) "-" (or (:duration take) 0)))
 
 (defn- sync-music!
-  "Hand the engine the music lane as it now stands, and the two lane gains."
+  "Hand the engine the imported lanes as they now stand, and every lane level."
   [take]
-  (engine/set-gains! (or (:voice-gain take) 1.0) (or (:music-gain take) 1.0))
+  (engine/set-gains! (or (:voice-gain take) 1.0)
+                     (or (:music-gain take) 1.0)
+                     (or (:fx-gain take) 1.0))
   (engine/set-music! (:id take) (:music take)))
 
 (defn select! [id]
@@ -271,13 +273,14 @@
 
    Sent as raw bytes for the same reason the microphone recording is: the file
    is the body, and there is no comfortable way to post one through cljs-ajax."
-  [id file at]
+  [id file at lane]
   (swap! app assoc :error nil :importing? true)
   (-> (js/fetch (str "/api/recordings/" id "/music")
                 #js {:method "POST"
                      :headers #js {"Content-Type" "application/octet-stream"
                                    "X-Filename" (.-name file)
-                                   "X-At" (str at)}
+                                   "X-At" (str at)
+                                   "X-Lane" (name lane)}
                      :body file})
       (.then (fn [res]
                (swap! app assoc :importing? false)
@@ -289,20 +292,23 @@
 
 (defn add-sample-music!
   "A synthesised bed, so the lane can be tried without going to find a file."
-  [id at]
+  [id at lane]
   (swap! app assoc :error nil :importing? true)
-  (api/POST (str "/api/recordings/" id "/music/sample?at=" at)
+  (api/POST (str "/api/recordings/" id "/music/sample?at=" at "&lane=" (name lane))
             (fn [t] (swap! app assoc :importing? false) (refresh-take! t))
             (fn [_] (swap! app assoc :importing? false
                            :error "could not make a sample"))))
 
-(defn move-music!
-  "Put a music clip somewhere else. The only thing dragging one changes, and it
-   moves nothing else — that independence is what the lane is for."
-  [id cid at]
-  (api/PUT (str "/api/recordings/" id "/music/" cid) {:at at}
+(defn set-music!
+  "Where a clip sits and how much of it plays. Dragging its body moves it,
+   dragging its end shortens it, and neither disturbs anything else — that
+   independence is what these lanes are for.
+
+   Shortening is reversible because the file is never what gets shortened."
+  [id cid m]
+  (api/PUT (str "/api/recordings/" id "/music/" cid) m
            refresh-take!
-           #(swap! app assoc :error "could not move that clip")))
+           #(swap! app assoc :error "could not change that clip")))
 
 (defn delete-music! [id cid]
   (api/DELETE (str "/api/recordings/" id "/music/" cid)
@@ -318,10 +324,12 @@
   [id k v live?]
   (let [take (selected-take)
         v    (double v)
-        take (assoc take (if (= :voice k) :voice-gain :music-gain) v)]
+        take (assoc take (case k :voice :voice-gain :fx :fx-gain :music-gain) v)]
     (swap! app update :recordings
            (fn [rs] (mapv #(if (= id (:id %)) take %) rs)))
-    (engine/set-gains! (or (:voice-gain take) 1.0) (or (:music-gain take) 1.0))
+    (engine/set-gains! (or (:voice-gain take) 1.0)
+                       (or (:music-gain take) 1.0)
+                       (or (:fx-gain take) 1.0))
     (when-not live?
       (api/PUT (str "/api/recordings/" id "/gain") {k v}
                (fn [_] nil)

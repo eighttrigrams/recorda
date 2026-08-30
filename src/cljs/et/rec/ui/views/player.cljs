@@ -309,11 +309,11 @@
 
    The number does both jobs — preview and export — because a balance you set
    by ear and then find undone in the finished file would be worse than no
-   slider at all. Unity is marked, and the range goes past it because a voice
-   recorded quietly is the commonest thing to have to fix here."
+   slider at all. The range goes past unity because a voice recorded quietly is
+   the commonest thing to have to fix here."
   [take k label]
   (let [id (:id take)
-        v  (double (or (get take (if (= :voice k) :voice-gain :music-gain)) 1.0))
+        v  (double (or (get take (case k :voice :voice-gain :fx :fx-gain :music-gain)) 1.0))
         commit (fn [e] (state/set-gain! id k (js/parseFloat (.. e -target -value)) false))]
     [:label.gain {:class (when (= 1.0 v) "unity")}
      [:span.gain-label label]
@@ -327,45 +327,60 @@
   [:div.levels
    [gain-slider take :voice "Voice"]
    [gain-slider take :music "Music"]
-   (when-not (seq (:music take))
-     [:span.levels-note "the music lane is empty — drop an audio file on it"])])
+   [gain-slider take :fx    "FX"]])
 
-;; --- the music lane --------------------------------------------------------
+;; --- the imported lanes ----------------------------------------------------
+;;
+;; Two of them, and they differ only in which slider they answer to — which is
+;; the whole point of having both. A bed and a door slam want completely
+;; different levels, and one lane means choosing between them.
 
 (defonce ^:private music-drag (r/atom nil))
 (defonce ^:private music-menu (r/atom nil))
 (defonce ^:private _close-music-menu
   (.addEventListener js/document "click" #(reset! music-menu nil)))
 
-(defn- lane-seconds-per-px [el]
+(defn- lane-seconds-per-px
+  "One CSS pixel of a lane, as a fraction of the whole timeline. Multiplied by
+   the take's duration it turns a drag in pixels into a drag in seconds."
+  [el]
   (let [w (.-clientWidth el)]
-    (when (pos? w) (/ 1 (max 1 w)))))
+    (if (pos? w) (/ 1 w) 0)))
 
-(defn- music-clip-view
-  "One imported track, drawn where it sits and draggable along the lane.
+(defn- clip-lane [c] (keyword (or (:lane c) :music)))
+(defn- clip-out  [c] (double (or (:out c) (:duration c) 0)))
 
-   Dragging is committed on release rather than as it moves. The `:at` shown
-   while the pointer is down is local, so the clip follows the hand at screen
-   rate; one PUT lands at the end of the gesture instead of one per pixel."
+(defn- audio-clip-view
+  "One imported clip, drawn where it sits and for as long as it plays.
+
+   Its body drags it along the lane; the grip on its right edge shortens it.
+   Both are committed on release rather than as they move, so the clip follows
+   the hand at screen rate and one PUT lands at the end of the gesture instead
+   of one per pixel."
   [take dur clip]
   (let [d    @music-drag
         me?  (= (:cid d) (:id clip))
-        at   (if me? (:at d) (:at clip))
-        len  (or (:duration clip) 0)
+        at   (if (and me? (= :move (:mode d))) (:at d) (:at clip))
+        len  (if (and me? (= :resize (:mode d))) (:out d) (clip-out clip))
+        full (double (or (:duration clip) len))
         past (> (+ at len) dur)]
     [:div.music-clip
-     {:class (str (when me? "dragging ") (when past "overhangs"))
+     {:class (str (when me? "dragging ") (when past "overhangs "))
       :style {:left  (str (* 100 (/ at (max 0.001 dur))) "%")
               :width (str (* 100 (/ len (max 0.001 dur))) "%")}
-      :title (str (:name clip) " — " (fmt at) ", " (fmt len) " long"
-                  (when past " (runs past the end of the video)"))
+      :title (str (:name clip) " — at " (fmt at) ", plays " (fmt len)
+                  (when (< len (- full 0.01))
+                    (str " of " (fmt full) "; drag the end right to bring it back"))
+                  (when past " — runs past the end of the video"))
       :on-mouse-down
       (fn [e]
         (.preventDefault e)
         (.stopPropagation e)
         (when-let [lane (.closest (.-target e) ".lane-body")]
-          (reset! music-drag {:cid (:id clip) :at (:at clip)
-                              :x0 (.-clientX e) :at0 (:at clip)
+          (reset! music-drag {:cid (:id clip) :mode :move
+                              :at (:at clip) :out (clip-out clip)
+                              :x0 (.-clientX e) :at0 (:at clip) :out0 (clip-out clip)
+                              :full full
                               :per (lane-seconds-per-px lane)})))
       :on-context-menu
       (fn [e]
@@ -376,7 +391,21 @@
                                   (menu-point e))))
       :on-click #(.stopPropagation %)
       :on-double-click #(.stopPropagation %)}
-     [:span.music-name (:name clip)]]))
+     [:span.music-name (:name clip)]
+     ;; The grip. Its own mousedown, and it stops the bubble so the body's
+     ;; move-drag never starts underneath it.
+     [:div.music-grip
+      {:title "Drag to shorten. Drag back out to restore it — the file is never what gets shortened."
+       :on-mouse-down
+       (fn [e]
+         (.preventDefault e)
+         (.stopPropagation e)
+         (when-let [lane (.closest (.-target e) ".lane-body")]
+           (reset! music-drag {:cid (:id clip) :mode :resize
+                               :at (:at clip) :out (clip-out clip)
+                               :x0 (.-clientX e) :at0 (:at clip) :out0 (clip-out clip)
+                               :full full
+                               :per (lane-seconds-per-px lane)})))}]]))
 
 (defn- music-menu-view [take]
   (when-let [m (let [m @music-menu] (when (= (:id m) (:id take)) m))]
@@ -384,7 +413,7 @@
                               :top  (- (:y m) 10)}
                       :on-click #(.stopPropagation %)
                       :on-context-menu #(.preventDefault %)}
-     [:div.piece-menu-head "Music"
+     [:div.piece-menu-head "Clip"
       [:span.piece-menu-sub (:name m)]]
      (if (:confirm? m)
        [:div.piece-menu-confirm
@@ -396,25 +425,26 @@
        [:button.piece-menu-item
         {:title "Takes the clip out of the lane and its file off the disk. Unlike a sitting, this was imported — the copy that matters is the one you imported it from."
          :on-click #(swap! music-menu assoc :confirm? true)}
-        "Remove this music"])]))
+        "Remove this clip"])]))
 
-(defn- music-lane [take dur]
-  (let [id (:id take)]
-    [:div.lane.lane-music
+(defn- audio-lane [take dur lane label hint]
+  (let [id (:id take)
+        cs (filter #(= lane (clip-lane %)) (:music take))]
+    [:div.lane {:class (str "lane-import lane-" (name lane))}
      [:div.lane-label
-      [:span "Music"]
+      [:span label]
       [:label.add-music {:title "Import an audio file. It lands where the playhead is."}
        "+"
        [:input {:type "file" :accept "audio/*" :style {:display "none"}
                 :on-change (fn [e]
                              (when-let [f (aget (.-files (.-target e)) 0)]
-                               (state/add-music! id f (:time @state/app)))
+                               (state/add-music! id f (:time @state/app) lane))
                              (set! (.-value (.-target e)) ""))}]]]
      [:div.lane-body
       {:on-click seek-from-event
-       ;; Dropping a file is the gesture people try first, and it carries the
-       ;; position with it: the clip lands where it was dropped, not where the
-       ;; playhead happens to be.
+       ;; Dropping is the gesture people try first, and it carries the position
+       ;; with it: the clip lands where it was dropped, not where the playhead
+       ;; happens to be.
        :on-drag-over (fn [e] (.preventDefault e))
        :on-drop (fn [e]
                   (.preventDefault e)
@@ -422,19 +452,18 @@
                         frac (/ (- (.-clientX e) (.-left r)) (.-width r))
                         at   (* (max 0 (min 1 frac)) dur)]
                     (doseq [f (array-seq (.-files (.-dataTransfer e)))]
-                      (state/add-music! id f at))))}
-      (if (seq (:music take))
-        (for [c (:music take)]
-          ^{:key (:id c)} [music-clip-view take dur c])
+                      (state/add-music! id f at lane))))}
+      (if (seq cs)
+        (for [c cs] ^{:key (:id c)} [audio-clip-view take dur c])
         [:div.empty {:style {:padding "6px 8px"}}
          (if (:importing? @state/app)
            "reading the file…"
-           [:span "drop an audio file here, press + — or "
+           [:span hint " — or "
             [:a.sample-link
              {:href "#"
-              :title "A synthesised bed, so the lane can be tried without going to find a file"
+              :title "A synthesised clip, so the lane can be tried without going to find a file"
               :on-click (fn [e] (.preventDefault e) (.stopPropagation e)
-                          (state/add-sample-music! id (:time @state/app)))}
+                          (state/add-sample-music! id (:time @state/app) lane))}
              "add a sample"]])])]]))
 
 ;; Dragging is tracked on the window rather than the clip, so the pointer can
@@ -444,18 +473,25 @@
     (fn [e]
       (when-let [d @music-drag]
         (let [dur (or (:duration (state/selected-take)) 0)
-              dx  (- (.-clientX e) (:x0 d))]
-          (swap! music-drag assoc
-                 :at (max 0 (+ (:at0 d) (* dx (:per d) dur)))))))))
+              dt  (* (- (.-clientX e) (:x0 d)) (:per d) dur)]
+          (if (= :resize (:mode d))
+            ;; Clamped to the file's own length, which is the whole of what
+            ;; makes this reversible: the end stops growing exactly where the
+            ;; material runs out.
+            (swap! music-drag assoc :out (max 0.25 (min (:full d) (+ (:out0 d) dt))))
+            (swap! music-drag assoc :at (max 0 (+ (:at0 d) dt)))))))))
 
 (defonce ^:private _music-drag-up
   (.addEventListener js/window "mouseup"
     (fn [_]
       (when-let [d @music-drag]
         (reset! music-drag nil)
-        (when (> (js/Math.abs (- (:at d) (:at0 d))) 0.01)
-          (state/move-music! (:selected @state/app) (:cid d)
-                             (/ (js/Math.round (* 1000 (:at d))) 1000)))))))
+        (let [r #(/ (js/Math.round (* 1000 %)) 1000)]
+          (if (= :resize (:mode d))
+            (when (> (js/Math.abs (- (:out d) (:out0 d))) 0.01)
+              (state/set-music! (:selected @state/app) (:cid d) {:out (r (:out d))}))
+            (when (> (js/Math.abs (- (:at d) (:at0 d))) 0.01)
+              (state/set-music! (:selected @state/app) (:cid d) {:at (r (:at d))}))))))))
 
 (defn- lanes [take]
   (let [peaks (:peaks @state/app)
@@ -484,7 +520,8 @@
          [waveform (:peaks peaks)]
          [:div.empty {:style {:padding "8px"}} "reading waveform…"])
        [piece-highlight take]]]
-     [music-lane take dur]
+     [audio-lane take dur :music "Music" "drop an audio file here, or press +"]
+     [audio-lane take dur :fx    "FX"    "drop an effect here, or press +"]
      ;; Positioned exactly the way the playhead is, so a seam and the playhead
      ;; sitting on the same instant land on the same pixel.
      (when (pos? dur)

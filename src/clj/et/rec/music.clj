@@ -31,7 +31,23 @@
 (defn dir ^java.io.File [id]
   (doto (io/file (store/dir id) "music") (.mkdirs)))
 
-(defn clips [id] (vec (:music (store/read-meta id))))
+(def lanes
+  "The imported lanes, in the order they are drawn.
+
+   Two, and they differ only in which slider they answer to — which is the
+   whole point of having both. A bed and a door slam want completely different
+   levels, and one lane means choosing between them."
+  [:music :fx])
+
+(defn clips
+  "Every imported clip, or only one lane's.
+
+   A clip with no `:lane` is music. That is how they were all written before
+   there was a second lane, so nothing had to be migrated when there was."
+  ([id] (vec (:music (store/read-meta id))))
+  ([id lane] (filterv #(= lane (keyword (or (:lane %) :music))) (clips id))))
+
+(defn gain-key [lane] (if (= :fx (keyword lane)) :fx-gain :music-gain))
 
 (defn clip [id cid] (first (filter #(= cid (:id %)) (clips id))))
 
@@ -60,7 +76,7 @@
    export, and both are perfectly happy with whatever came off the disk; a
    conversion here would only be a second copy to keep and a generation to
    lose."
-  [id ^java.io.File uploaded filename at]
+  [id ^java.io.File uploaded filename at lane]
   (let [n    (inc (reduce max 0 (map (fnil :n {:n 0}) (clips id))))
         cid  (str "m" n)
         fname (str (format "%03d" n) "-" (safe-name filename))
@@ -75,8 +91,14 @@
           (store/update-meta!
             id update :music (fnil conj [])
             {:id cid :n n :file fname :name (or filename fname)
+             :lane (if (= :fx (keyword lane)) :fx :music)
              :at (max 0.0 (double (or at 0.0)))
-             :duration dur :peak-count (:count pk)})
+             ;; `:duration` is the file's own length and never changes;
+             ;; `:out` is how much of it plays. Keeping them apart is what
+             ;; makes shortening a clip reversible — the end can always be
+             ;; pulled back out to the file's length, because the file was
+             ;; never the thing that was shortened.
+             :duration dur :out dur :peak-count (:count pk)})
           {:ok? true :id cid :duration dur})))))
 
 (defn- sample-length
@@ -119,29 +141,64 @@
             "aformat=sample_rates=44100:channel_layouts=stereo")
        "-c:a" "libmp3lame" "-b:a" "128k" (str out)])))
 
+(defn- blip-args
+  "A short effect rather than a bed. The FX lane wants something with an
+   attack and an end you can place against a cut, so this is a quick rising
+   chirp under a fast decay — nothing musical, and over in well under two
+   seconds."
+  [^java.io.File out secs]
+  (let [secs (double secs)]
+    ["-f" "lavfi" "-i" (format "sine=frequency=440:duration=%.3f" secs)
+     "-f" "lavfi" "-i" (format "sine=frequency=660:duration=%.3f" secs)
+     "-filter_complex"
+     (str "[0]volume=0.5[a];[1]volume=0.35[b];"
+          "[a][b]amix=inputs=2:normalize=0,"
+          (format "afade=t=out:st=%.3f:d=%.3f," (* secs 0.15) (* secs 0.85))
+          "afade=t=in:st=0:d=0.01,"
+          "aformat=sample_rates=44100:channel_layouts=stereo")
+     "-c:a" "libmp3lame" "-b:a" "128k" (str out)]))
+
 (defn add-sample!
   "Put a synthesised bed in the lane at `at`, so the lane can be tried without
    going to find a file first."
-  [id at]
-  (let [tmp (java.io.File/createTempFile "recorda-sample-" ".mp3")]
+  [id at lane]
+  (let [fx?  (= :fx (keyword lane))
+        tmp  (java.io.File/createTempFile "recorda-sample-" ".mp3")
+        secs (if fx? 1.6 (sample-length id at))]
     (.delete tmp)
-    (let [res (ff/exec! (sample-args tmp (sample-length id at)))]
+    (let [res (ff/exec! (if fx? (blip-args tmp secs) (sample-args tmp secs)))]
       (if-not (:ok? res)
         {:ok? false :error (str "could not make a sample: " (:log res))}
-        (add! id tmp "sample bed.mp3" at)))))
+        (add! id tmp (if fx? "sample blip.mp3" "sample bed.mp3") at lane)))))
 
-(defn move!
-  "Put a clip somewhere else on the timeline. The only thing a drag changes."
-  [id cid at]
-  (if-not (clip id cid)
-    {:ok? false :error "no such clip"}
-    (do (store/update-meta!
-          id update :music
-          (fn [ms] (mapv #(if (= cid (:id %))
-                            (assoc % :at (max 0.0 (double (or at 0.0))))
-                            %)
-                         ms)))
-        {:ok? true})))
+(def ^:private min-clip
+  "The shortest a clip can be dragged to. Below this a resize is a mis-click
+   rather than an edit, and a clip too small to grab again is a clip you cannot
+   undo by hand."
+  0.25)
+
+(defn set!
+  "Move a clip, shorten it, or both. `at` is where it sits on the timeline;
+   `out` is how far into the file it plays.
+
+   `out` is clamped to the file's own length, which is what makes the gesture
+   reversible: drag the end left to shorten, drag it right again and the clip
+   grows back, and it stops growing exactly where the material runs out."
+  [id cid {:keys [at out]}]
+  (if-let [c (clip id cid)]
+    (let [dur (double (or (:duration c) 0.0))]
+      (store/update-meta!
+        id update :music
+        (fn [ms]
+          (mapv (fn [m]
+                  (if-not (= cid (:id m))
+                    m
+                    (cond-> m
+                      at  (assoc :at  (max 0.0 (double at)))
+                      out (assoc :out (max min-clip (min dur (double out)))))))
+                ms)))
+      {:ok? true})
+    {:ok? false :error "no such clip"}))
 
 (defn remove!
   "Take a clip out of the lane, and its file off the disk.

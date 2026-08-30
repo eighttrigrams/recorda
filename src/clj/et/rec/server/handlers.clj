@@ -255,14 +255,15 @@
   [req]
   (let [id   (get-in req [:params :id])
         name (or (get-in req [:headers "x-filename"]) "music")
-        at   (or (some-> (get-in req [:headers "x-at"]) parse-double) 0.0)]
+        at   (or (some-> (get-in req [:headers "x-at"]) parse-double) 0.0)
+        lane (or (get-in req [:headers "x-lane"]) "music")]
     (cond
       (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
       (nil? (:body req))          (bad {:error "no file"})
       :else
       (let [tmp (java.io.File/createTempFile (str "recorda-music-" id "-") ".bin")]
         (io/copy (:body req) tmp)
-        (let [r (try (music/add! id tmp name at)
+        (let [r (try (music/add! id tmp name at lane)
                      (catch Exception e {:ok? false :error (.getMessage e)}))]
           (if (:ok? r) (ok (store/read-meta id)) (bad r)))))))
 
@@ -275,25 +276,33 @@
   plainly synthetic, which is what you want in a sample — you can hear exactly
   where it starts and stops."
   [req]
-  (let [id (get-in req [:params :id])
-        at (or (some-> (get-in req [:params "at"]) parse-double) 0.0)]
+  (let [id   (get-in req [:params :id])
+        at   (or (some-> (get-in req [:params "at"]) parse-double) 0.0)
+        lane (or (get-in req [:params "lane"]) "music")]
     (if (nil? (store/read-meta id))
       {:status 404 :body {:error "no such project"}}
-      (let [r (music/add-sample! id at)]
+      (let [r (music/add-sample! id at lane)]
         (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn move-music-handler
-  "PUT /api/recordings/:id/music/:cid — put a music clip somewhere else on the
-  timeline. `at` in seconds, and the only thing dragging one changes."
+  "PUT /api/recordings/:id/music/:cid — where a music clip sits and how much of
+  it plays. `at` is its place on the timeline, `out` how far into the file it
+  runs. Either, or both.
+
+  Shortening is reversible because the file is never what gets shortened: `out`
+  is clamped to the file's own length, so dragging the end back out grows the
+  clip again and stops exactly where the material does."
   [req]
   (let [id  (get-in req [:params :id])
         cid (get-in req [:params :cid])
         at  (or (some-> (get-in req [:params "at"]) parse-double)
-                (some-> (get-in req [:body :at]) double))]
+                (some-> (get-in req [:body :at]) double))
+        out (or (some-> (get-in req [:params "out"]) parse-double)
+                (some-> (get-in req [:body :out]) double))]
     (cond
-      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
-      (nil? at)                   (bad {:error "at (seconds) required"})
-      :else (let [r (music/move! id cid at)]
+      (nil? (store/read-meta id))  {:status 404 :body {:error "no such project"}}
+      (and (nil? at) (nil? out))   (bad {:error "at or out (seconds) required"})
+      :else (let [r (music/set! id cid {:at at :out out})]
               (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn delete-music-handler
@@ -311,7 +320,7 @@
 
 (defn set-gain-handler
   "PUT /api/recordings/:id/gain — how loud each lane plays and exports, as
-  `voice` and `music`, where 1.0 is as recorded.
+  `voice`, `music` and `fx`, where 1.0 is as recorded.
 
   The same numbers do both jobs on purpose. A balance you set by ear against
   the preview and then find undone in the export would be worse than no slider
@@ -323,6 +332,7 @@
       {:status 404 :body {:error "no such project"}}
       (do (when (:voice b) (music/set-gain! id :voice-gain (double (:voice b))))
           (when (:music b) (music/set-gain! id :music-gain (double (:music b))))
+          (when (:fx b)    (music/set-gain! id :fx-gain    (double (:fx b))))
           (ok (store/read-meta id))))))
 
 (defn music-media-handler

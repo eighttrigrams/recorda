@@ -272,7 +272,7 @@ remains is every sitting whole and in order the arrangement is dropped
 altogether — **deleting an insertion leaves the project as though it never
 happened.**
 
-## The third lane
+## The imported lanes
 
 Picture and voice were recorded together and are locked together — that is what
 the whole assembly exists to preserve, and why neither can be moved without the
@@ -280,9 +280,21 @@ other. **Music is the opposite kind of thing.** It was not recorded here, it has
 no instant it belongs to, and where it sits is a decision you make afterwards
 and change your mind about.
 
-Drop an audio file on the Music lane, or press the `+` beside it. Dropping puts
-the clip where you dropped it; the `+` puts it at the playhead. Drag a clip
-along the lane to move it, right-click it to remove it.
+There are two: **Music** for a bed, **FX** for the short things that land
+against a cut. They differ only in which slider they answer to, which is the
+whole point of having both — a bed and a door slam want completely different
+levels, and one lane means choosing between them.
+
+Drop an audio file on either, or press the `+` beside it. Dropping puts the clip
+where you dropped it; the `+` puts it at the playhead. Drag a clip along the lane
+to move it, right-click it to remove it.
+
+**Grab a clip's right edge to shorten it, and drag it back out to restore it.**
+That is reversible because the file is never what gets shortened: a clip carries
+its file's own length *and* how much of it plays, and dragging the end only ever
+moves the second. It stops growing exactly where the material runs out, so
+there is no way to drag past the end of what you imported. No confirm on this
+one — nothing is lost by it.
 
 **add a sample** on the empty lane makes a bed with ffmpeg rather than shipping
 one — four sine partials on a major triad, a slow tremolo, fades at both ends.
@@ -293,7 +305,7 @@ It is cut to fit whatever is left of the timeline from where it lands, up to
 twenty seconds, because a sample that overhangs the end on arrival would be
 demonstrating the wrong thing.
 
-**No edit moves a music clip.** Trim the video and the music stays exactly where
+**No edit moves an imported clip.** Trim the video and the music stays exactly where
 you put it — the tail simply is not heard, and a clip that runs off the end is
 drawn with a dashed edge to say so rather than being silently shortened. That is
 the honest reading of a music clip's `:at` as a place in the *finished piece*
@@ -309,9 +321,9 @@ was *imported* rather than recorded, so the copy that matters is the one you
 imported it from — keeping a second against a change of mind would only fill the
 project with tracks you decided against.
 
-## Two levels, one meaning
+## Three levels, one meaning
 
-The Voice and Music sliders set how loud each lane is, and **the same numbers do
+The Voice, Music and FX sliders set how loud each lane is, and **the same numbers do
 both jobs** — what you hear in the browser is what lands in the mp4. A balance
 set by ear against the preview and then found undone in the finished file would
 be worse than no slider at all.
