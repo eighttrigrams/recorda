@@ -36,15 +36,18 @@
 
 (defn fetch-peaks! [id]
   (swap! app assoc :peaks nil)
-  (api/GET (str "/media/" id "/peaks.json")
+  (api/GET (str "/media/" id "/peaks.json?v=" (js/Date.now))
            #(when (= id (:selected @app)) (swap! app assoc :peaks %))))
 
 (defn select! [id]
   (swap! app assoc :selected id :time 0.0 :playing? false
          :duration (or (:duration (first (filter (fn [r] (= id (:id r)))
                                                  (:recordings @app)))) 0.0))
-  ;; Decoding the whole take up front is what buys playback that cannot stall.
-  (engine/load! id)
+  ;; Decoding the whole thing up front is what buys playback that cannot stall.
+  ;; The version is the assembly's duration: it changes whenever a sitting is
+  ;; appended or a trim moves, which is exactly when the audio must be reloaded.
+  (engine/load! id (str (:duration (first (filter (fn [r] (= id (:id r)))
+                                                  (:recordings @app))))))
   (fetch-peaks! id))
 
 ;; --- the take --------------------------------------------------------------
@@ -65,9 +68,9 @@
   "Send the microphone recording for a take, with the lead time that lines it
    up against the picture. Sent as raw bytes rather than through cljs-ajax,
    which has no comfortable way to post an ArrayBuffer."
-  [id buffer lead-ms]
+  [id n buffer lead-ms]
   (swap! app assoc :uploading? true)
-  (-> (js/fetch (str "/api/recordings/" id "/audio")
+  (-> (js/fetch (str "/api/recordings/" id "/segments/" n "/audio")
                 #js {:method  "POST"
                      :headers #js {"Content-Type"    "application/octet-stream"
                                    "X-Audio-Lead-Ms" (str lead-ms)}
@@ -77,14 +80,40 @@
                (when-not (.-ok res)
                  (swap! app assoc :error "the server would not take the audio"))
                (fetch-recordings!)
-               (fetch-status!)))
+               (fetch-status!)
+               (select! (:selected @app))))
       (.catch (fn [e]
                 (swap! app assoc :uploading? false
                        :error (str "could not send the audio: " e))
                 (fetch-status!)))))
 
+(defn create-project!
+  "Make a new, empty project and open it. A project is one video; recording
+   into it is what fills it."
+  []
+  (api/POST "/api/recordings"
+            (fn [p]
+              (fetch-recordings!)
+              (swap! app assoc :selected (:id p) :time 0.0 :duration 0.0 :peaks nil))
+            #(swap! app assoc :error "could not create the project")))
+
+(defn trim!
+  "Cut the open project's tail at the playhead."
+  [id at]
+  (swap! app assoc :error nil)
+  (api/POST (str "/api/recordings/" id "/trim?at=" at)
+            (fn [_] (fetch-recordings!) (select! id))
+            #(swap! app assoc :error (or (get-in % [:response :error]) "could not trim"))))
+
+(defn untrim!
+  "Put every trim and every dropped sitting back."
+  [id]
+  (api/POST (str "/api/recordings/" id "/untrim")
+            (fn [_] (fetch-recordings!) (select! id))
+            #(swap! app assoc :error (or (get-in % [:response :error]) "could not undo the trim"))))
+
 (defn start!
-  "Begin a take.
+  "Record another sitting onto the open project.
 
    **The microphone leads.** It is opened first and the screen capture is not
    started until real audio has arrived, because an interface takes its own
@@ -94,7 +123,7 @@
    The server answers with `video-started-at`, the instant frames actually
    began, and the difference between that and the moment audio went live is the
    lead that gets trimmed off the front of the recording when it is uploaded."
-  []
+  [project-id]
   (swap! app assoc :error nil :audio-live-ms nil)
   ;; A monitor holds the same device; take it back before recording.
   (mic/stop-monitor!)
@@ -103,7 +132,7 @@
     ;; on-live: sound is really flowing, so now start the picture
     (fn [live-ms]
       (swap! app assoc :audio-live-ms live-ms)
-      (api/POST "/api/record/start"
+      (api/POST (str "/api/recordings/" project-id "/record/start")
                 (fn [st] (swap! app assoc :status st))
                 (fn [e]
                   (mic/cancel!)
@@ -117,13 +146,14 @@
   (api/POST "/api/record/stop"
             (fn [res]
               (let [id   (:id res)
+                    n    (:segment res)
                     wav  (mic/stop!)
                     lead (max 0 (- (or (get-in @app [:status :video-started-at]) 0)
                                    (or (:audio-live-ms @app) 0)))]
                 (fetch-status!)
-                (if (and id wav)
-                  (upload-audio! id (:buffer wav) lead)
-                  (swap! app assoc :error "no audio was recorded for this take"))))
+                (if (and id n wav)
+                  (upload-audio! id n (:buffer wav) lead)
+                  (swap! app assoc :error "no audio was recorded for this sitting"))))
             (fn [e]
               (mic/cancel!)
               (swap! app assoc :error (or (get-in e [:response :error]) "could not stop")))))

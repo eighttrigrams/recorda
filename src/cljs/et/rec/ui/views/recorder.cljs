@@ -79,10 +79,15 @@
                       :title "Re-measure the screens — needed after plugging a display in"}
       "rescan"]]))
 
-(defn record-button []
+(defn record-button
+  "Records another sitting onto the given project. There is no global record
+   button: a project is one video, and recording is something you do inside
+   one — the first press is its opening, every later press appends."
+  [project-id]
   (let [rec?  (state/recording?)
         proc? (state/processing?)
-        ready (get-in @state/app [:devices :ready?])]
+        ready (get-in @state/app [:devices :ready?])
+        first? (zero? (or (:segment-count @state/app) 0))]
     [:div {:style {:display "flex" :align-items "center" :gap "12px"}}
      (when rec?
        (let [started (get-in @state/app [:status :started-at])]
@@ -91,7 +96,10 @@
        [:span.processing-note
         (if (:uploading? @state/app) "saving audio…" "finishing…")])
      [:button.record-btn {:class    (str (when rec? "recording recording-now"))
-                          :disabled (or proc? (and (not rec?) (not ready)))
-                          :on-click #(if rec? (state/stop!) (state/start!))}
+                          :disabled (or proc? (and (not rec?) (or (not ready) (nil? project-id))))
+                          :on-click #(if rec? (state/stop!) (state/start! project-id))}
       [:span.dot]
-      (cond rec? "Stop" proc? "Working" :else "Record")]]))
+      (cond rec?   "Stop"
+            proc?  "Working"
+            first? "Record"
+            :else  "Record more")]]))

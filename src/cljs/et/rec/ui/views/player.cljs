@@ -11,6 +11,7 @@
    does no harm, and the sound plays exactly as recorded."
   (:require [et.rec.ui.engine :as engine]
             [et.rec.ui.state :as state]
+            [et.rec.ui.views.recorder :as recorder]
             [et.rec.ui.waveform :refer [waveform]]
             [reagent.core :as r]))
 
@@ -112,47 +113,78 @@
          [:div.empty {:style {:padding "8px"}} "reading waveform…"])]]
      [:div.playhead {:ref #(reset! playhead-el %) :style {:left "58px"}}]]))
 
-(defn player []
+(defn- trimmed? [take]
+  (boolean (some #(or (:out %) (:dropped %)) (:segments take))))
+
+(defn player
+  "The project pane: what this video is, and everything you do to it.
+
+   Recording lives here rather than in the header because a project *is* one
+   video — the first sitting opens it and every later one is appended, so there
+   is no such thing as recording without somewhere for it to go."
+  []
   (let [take (state/selected-take)]
     (if-not take
-      [:div.panel [:div.empty "No take selected. Record one, or pick one on the left."]]
-      (let [id      (:id take)
-            estate  @engine/state
-            ready?  (:ready? estate)]
+      [:div.panel [:div.empty "Pick a project on the left, or make a new one."]]
+      (let [id    (:id take)
+            ver   (str (:duration take))
+            estate @engine/state
+            ready? (:ready? estate)
+            empty? (or (= "empty" (:status take)) (nil? (:duration take)))]
         [:div.panel
-         [:div.video-wrap
-          ;; Keyed on the id so choosing another take remounts the element
-          ;; rather than swapping src underneath a running decoder. Muted, and
-          ;; not merely turned down: its own audio track does not exist, and
-          ;; muted is also what lets it autoplay when the clock says go.
-          ^{:key id}
-          [:video {:ref     #(reset! video-el %)
-                   :src     (str "/media/" id "/video.mp4")
-                   :muted   true
-                   :preload "auto"
-                   :on-click (fn [_] (toggle!))}]]
-         [:div.transport
-          [:button {:on-click (fn [_] (toggle!)) :disabled (not ready?)}
-           (cond (:loading? estate) "Decoding…"
-                 (:playing? estate) "Pause"
-                 :else              "Play")]
-          [:button {:on-click (fn [_] (engine/seek! 0)) :disabled (not ready?)} "Start"]
-          ;; The one place the two tracks become one file again. Everything
-          ;; else in recorda keeps them apart on purpose.
-          [:button {:on-click (fn [_] (state/export! id))
-                    :disabled (:exporting? @state/app)}
-           (if (:exporting? @state/app) "Exporting…" "Export mp4")]
-          [:span.timecode
-           [:b (fmt (:time @state/app))] " / " (fmt (or (:duration take) 0))]]
-         [lanes]
-         [:div.meta-line
-          [:span (:width take) "×" (:height take)]
-          [:span "audio: " (or (:audio-source take) "ffmpeg")]
-          (when-let [db (:peak-dbfs take)]
-            [:span {:style (when (< db -30) {:color "var(--record)"})}
-             "peak " (js/Math.round db) " dBFS"
-             (when (< db -30) " — recorded too quietly")])
-          [:span "mic led the picture by "
-           (js/Math.round (* 1000 (or (:audio-lead take) (:audio-offset take) 0))) " ms"]
-          [:span [:a {:href (str "/media/" id "/audio.wav") :download true} "audio.wav"]]
-          [:span [:a {:href (str "/media/" id "/video.mp4") :download true} "video.mp4"]]]]))))
+         [:div.project-head
+          [:h2 {:on-click (fn [_] (when-let [t (js/prompt "Title" (:title take))]
+                                    (state/rename! id t)))
+                :title "Click to rename"}
+           (:title take)]
+          [:div.spacer]
+          [recorder/record-button id]]
+
+         (if empty?
+           [:div.empty "Nothing recorded yet. Press Record, and it becomes the opening of this video."]
+           [:div
+            [:div.video-wrap
+             ;; Keyed on the assembly's version as well as the id: appending or
+             ;; trimming rewrites the file under the same name, and an element
+             ;; keyed on the id alone would go on playing what it already had.
+             ^{:key (str id "-" ver)}
+             [:video {:ref     #(reset! video-el %)
+                      :src     (str "/media/" id "/video.mp4?v=" ver)
+                      :muted   true
+                      :preload "auto"
+                      :on-click (fn [_] (toggle!))}]]
+            [:div.transport
+             [:button {:on-click (fn [_] (toggle!)) :disabled (not ready?)}
+              (cond (:loading? estate) "Decoding…"
+                    (:playing? estate) "Pause"
+                    :else              "Play")]
+             [:button {:on-click (fn [_] (engine/seek! 0)) :disabled (not ready?)} "Start"]
+             [:span.timecode
+              [:b (fmt (:time @state/app))] " / " (fmt (or (:duration take) 0))]
+             [:div.spacer]
+             ;; Trim writes a number and drops nothing, so this is safe to
+             ;; press and safe to undo — which is what makes "record, back up a
+             ;; bit, carry on" a workflow rather than a gamble.
+             [:button {:on-click (fn [_] (state/trim! id (:time @state/app)))
+                       :disabled (or (state/busy?) (< (:time @state/app) 0.1))
+                       :title "Cut everything after the playhead; the next recording carries on from here"}
+              "Trim to playhead"]
+             (when (trimmed? take)
+               [:button.danger {:on-click (fn [_] (state/untrim! id))
+                                :disabled (state/busy?)
+                                :title "Put every trim and every dropped sitting back"}
+                "undo trim"])
+             [:button {:on-click (fn [_] (state/export! id))
+                       :disabled (:exporting? @state/app)}
+              (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
+            [lanes]
+            [:div.meta-line
+             [:span (:width take) "×" (:height take)]
+             (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))]
+               [:span (if (= 1 live) "one sitting" (str live " sittings"))])
+             (when-let [db (:peak-dbfs take)]
+               [:span {:style (when (< db -30) {:color "var(--record)"})}
+                "peak " (js/Math.round db) " dBFS"
+                (when (< db -30) " — recorded too quietly")])
+             [:span [:a {:href (str "/media/" id "/audio.wav?v=" ver) :download true} "audio.wav"]]
+             [:span [:a {:href (str "/media/" id "/video.mp4?v=" ver) :download true} "video.mp4"]]]])]))))

@@ -65,29 +65,66 @@
    }
    registerProcessor('rec', Rec);")
 
+(def ^:private never-pick
+  "Inputs that must never be chosen by accident.
+
+   A Continuity device is a *phone*. Opening it does not merely record the wrong
+   thing — it takes over the handset, interrupting whatever the person holding
+   it was doing. That is a real-world side effect from a fallback branch, so the
+   fallback does not get to reach it."
+  #"iphone|ipad|continuity")
+
+(defn- inputs [devices]
+  (filter #(= "audioinput" (.-kind %)) devices))
+
 (defn- pick-device
-  "The input whose label contains `wanted`, else the system default."
+  "The input whose label contains `wanted`; failing that the system default;
+   and never a phone."
   [devices wanted]
-  (let [w (some-> wanted .toLowerCase)]
+  (let [ins (remove #(re-find never-pick (.toLowerCase (or (.-label %) ""))) (inputs devices))
+        w   (some-> wanted .toLowerCase)]
     (or (when w
-          (first (filter #(and (= "audioinput" (.-kind %))
-                               (.includes (.toLowerCase (.-label %)) w))
-                         devices)))
-        (first (filter #(= "audioinput" (.-kind %)) devices)))))
+          (first (filter #(.includes (.toLowerCase (or (.-label %) "")) w) ins)))
+        (first (filter #(= "default" (.-deviceId %)) ins))
+        (first ins))))
+
+(defn- have-labels?
+  "Whether permission has already been granted. Device labels are blank until
+   it has, which is the only reason this namespace ever opens a stream it does
+   not want."
+  [devices]
+  (boolean (some #(seq (or (.-label %) "")) (inputs devices))))
+
+(defn- with-devices
+  "Call `f` with the device list, asking for permission only if we do not
+   already have it.
+
+   The warm-up `getUserMedia({audio: true})` takes the **system default**, which
+   on this machine is a phone — so doing it on every recording, as this used to,
+   interrupted the handset every time. Chrome remembers the grant per origin, so
+   after the first time the labels are simply there and no stream is opened."
+  [f on-error]
+  (-> (.enumerateDevices (.-mediaDevices js/navigator))
+      (.then (fn [devs]
+               (if (have-labels? (array-seq devs))
+                 devs
+                 (-> (.getUserMedia (.-mediaDevices js/navigator) #js {:audio true})
+                     (.then (fn [warm]
+                              (.forEach (.getTracks warm) (fn [t] (.stop t)))
+                              (.enumerateDevices (.-mediaDevices js/navigator))))))))
+      (.then f)
+      (.catch (fn [e] (when on-error (on-error (str e)))))))
 
 (defn list-devices
-  "Every audio input the browser can see. Labels are only populated once
-   permission has been given, which is why this asks for a stream first and
-   immediately drops it."
+  "Every audio input the browser can see."
   []
-  (-> (.getUserMedia (.-mediaDevices js/navigator) #js {:audio true})
-      (.then (fn [s]
-               (.forEach (.getTracks s) (fn [t] (.stop t)))
-               (.enumerateDevices (.-mediaDevices js/navigator))))
-      (.then (fn [devs]
-               (->> (array-seq devs)
-                    (filter #(= "audioinput" (.-kind %)))
-                    (mapv (fn [d] {:id (.-deviceId d) :label (.-label d)})))))))
+  (js/Promise.
+    (fn [resolve _reject]
+      (with-devices
+        (fn [devs]
+          (resolve (mapv (fn [d] {:id (.-deviceId d) :label (.-label d)})
+                         (inputs (array-seq devs)))))
+        (fn [_] (resolve []))))))
 
 (defn start!
   "Open the microphone and begin recording.
@@ -95,50 +132,50 @@
    `on-live` is called with the epoch millisecond at which the **first audio
    actually arrived** — not when the stream was requested. The two are not the
    same instant: an interface has a clock of its own to start, and on this
-   machine that has been over a second. Everything that follows lines up
-   against the moment sound really began, so the caller should not start the
-   picture until this fires."
+   machine that has been over a second. Everything that follows lines up against
+   the moment sound really began, so the caller should not start the picture
+   until this fires."
   [preferred-name on-live on-error]
-  (-> (.getUserMedia (.-mediaDevices js/navigator) #js {:audio true})
-      (.then (fn [warm]
-               (.forEach (.getTracks warm) (fn [t] (.stop t)))
-               (.enumerateDevices (.-mediaDevices js/navigator))))
-      (.then (fn [devs]
-               (let [d  (pick-device (array-seq devs) preferred-name)
-                     cs (if d
-                          #js {:deviceId #js {:exact (.-deviceId d)}
-                               :echoCancellation false
-                               :noiseSuppression false
-                               :autoGainControl  false}
-                          #js {:echoCancellation false
-                               :noiseSuppression false
-                               :autoGainControl  false})]
-                 (.getUserMedia (.-mediaDevices js/navigator) #js {:audio cs}))))
-      (.then (fn [stream]
-               (let [ctx (js/AudioContext. #js {:sampleRate 48000})
-                     url (.createObjectURL js/URL (js/Blob. #js [worklet-src]
-                                                            #js {:type "application/javascript"}))]
-                 (-> (.addModule (.-audioWorklet ctx) url)
-                     (.then (fn []
-                              (let [src    (.createMediaStreamSource ctx stream)
-                                    node   (js/AudioWorkletNode. ctx "rec")
-                                    chunks (array)
-                                    live   (atom nil)]
-                                (set! (.. node -port -onmessage)
-                                      (fn [e]
-                                        (when (nil? @live)
-                                          (reset! live (js/Date.now))
-                                          (on-live @live))
-                                        (note-peak! (.-data e))
-                                        (.push chunks (.-data e))))
-                                (.connect src node)
-                                (reset! cap {:ctx ctx :stream stream :node node
-                                             :chunks chunks :rate (.-sampleRate ctx)})
-                                (swap! state assoc :recording? true :error nil
-                                       :device (some-> (aget (.getAudioTracks stream) 0) .-label)))))))))
-      (.catch (fn [e]
-                (swap! state assoc :recording? false :error (str e))
-                (when on-error (on-error (str e)))))))
+  (with-devices
+    (fn [devs]
+      (let [d (pick-device (array-seq devs) preferred-name)]
+        (-> (.getUserMedia (.-mediaDevices js/navigator)
+                           #js {:audio (if d
+                                         #js {:deviceId #js {:exact (.-deviceId d)}
+                                              :echoCancellation false
+                                              :noiseSuppression false
+                                              :autoGainControl  false}
+                                         #js {:echoCancellation false
+                                              :noiseSuppression false
+                                              :autoGainControl  false})})
+            (.then (fn [stream]
+                     (let [ctx (js/AudioContext. #js {:sampleRate 48000})
+                           url (.createObjectURL js/URL (js/Blob. #js [worklet-src]
+                                                                  #js {:type "application/javascript"}))]
+                       (-> (.addModule (.-audioWorklet ctx) url)
+                           (.then (fn []
+                                    (let [src    (.createMediaStreamSource ctx stream)
+                                          node   (js/AudioWorkletNode. ctx "rec")
+                                          chunks (array)
+                                          live   (atom nil)]
+                                      (set! (.. node -port -onmessage)
+                                            (fn [e]
+                                              (when (nil? @live)
+                                                (reset! live (js/Date.now))
+                                                (on-live @live))
+                                              (note-peak! (.-data e))
+                                              (.push chunks (.-data e))))
+                                      (.connect src node)
+                                      (reset! cap {:ctx ctx :stream stream :node node
+                                                   :chunks chunks :rate (.-sampleRate ctx)})
+                                      (swap! state assoc :recording? true :monitoring? false
+                                             :error nil :hold 0.0
+                                             :device (some-> (aget (.getAudioTracks stream) 0) .-label)))))))))
+            (.catch (fn [e]
+                      (swap! state assoc :recording? false :error (str e))
+                      (when on-error (on-error (str e))))))))
+    (fn [e] (swap! state assoc :recording? false :error e)
+            (when on-error (on-error e)))))
 
 (defn- encode-wav
   "16-bit mono PCM. Big enough to matter — a minute is 5.7 MB — but this is
@@ -186,42 +223,38 @@
 (defn monitor!
   "Open the microphone without recording, so the level meter has something to
    show. This is what you set the interface's gain against — the alternative is
-   recording a take, listening, adjusting and recording again, which is how a
-   whole afternoon disappears into a signal that turns out to be 25 dB down."
+   recording a take, listening, adjusting and recording again."
   [preferred-name]
   (when-not (or (:recording? @state) (:monitoring? @state))
-    (-> (.getUserMedia (.-mediaDevices js/navigator) #js {:audio true})
-        (.then (fn [warm]
-                 (.forEach (.getTracks warm) (fn [t] (.stop t)))
-                 (.enumerateDevices (.-mediaDevices js/navigator))))
-        (.then (fn [devs]
-                 (let [d (pick-device (array-seq devs) preferred-name)]
-                   (.getUserMedia (.-mediaDevices js/navigator)
-                                  #js {:audio (if d
-                                                #js {:deviceId #js {:exact (.-deviceId d)}
-                                                     :echoCancellation false
-                                                     :noiseSuppression false
-                                                     :autoGainControl  false}
-                                                #js {:echoCancellation false
-                                                     :noiseSuppression false
-                                                     :autoGainControl  false})}))))
-        (.then (fn [stream]
-                 (let [ctx (js/AudioContext. #js {:sampleRate 48000})
-                       url (.createObjectURL js/URL (js/Blob. #js [worklet-src]
-                                                              #js {:type "application/javascript"}))]
-                   (-> (.addModule (.-audioWorklet ctx) url)
-                       (.then (fn []
-                                (let [src  (.createMediaStreamSource ctx stream)
-                                      node (js/AudioWorkletNode. ctx "rec")]
-                                  (set! (.. node -port -onmessage)
-                                        (fn [e] (note-peak! (.-data e))))
-                                  (.connect src node)
-                                  (reset! cap {:ctx ctx :stream stream :node node
-                                               :chunks (array) :rate (.-sampleRate ctx)})
-                                  (swap! state assoc :monitoring? true :error nil :hold 0.0
-                                         :device (some-> (aget (.getAudioTracks stream) 0) .-label)))))))))
-        (.catch (fn [e]
-                  (swap! state assoc :monitoring? false :error (str e)))))))
+    (with-devices
+      (fn [devs]
+        (let [d (pick-device (array-seq devs) preferred-name)]
+          (-> (.getUserMedia (.-mediaDevices js/navigator)
+                             #js {:audio (if d
+                                           #js {:deviceId #js {:exact (.-deviceId d)}
+                                                :echoCancellation false
+                                                :noiseSuppression false
+                                                :autoGainControl  false}
+                                           #js {:echoCancellation false
+                                                :noiseSuppression false
+                                                :autoGainControl  false})})
+              (.then (fn [stream]
+                       (let [ctx (js/AudioContext. #js {:sampleRate 48000})
+                             url (.createObjectURL js/URL (js/Blob. #js [worklet-src]
+                                                                    #js {:type "application/javascript"}))]
+                         (-> (.addModule (.-audioWorklet ctx) url)
+                             (.then (fn []
+                                      (let [src  (.createMediaStreamSource ctx stream)
+                                            node (js/AudioWorkletNode. ctx "rec")]
+                                        (set! (.. node -port -onmessage)
+                                              (fn [e] (note-peak! (.-data e))))
+                                        (.connect src node)
+                                        (reset! cap {:ctx ctx :stream stream :node node
+                                                     :chunks (array) :rate (.-sampleRate ctx)})
+                                        (swap! state assoc :monitoring? true :error nil :hold 0.0
+                                               :device (some-> (aget (.getAudioTracks stream) 0) .-label)))))))))
+              (.catch (fn [e] (swap! state assoc :monitoring? false :error (str e)))))))
+      (fn [e] (swap! state assoc :monitoring? false :error e)))))
 
 (defn stop-monitor! []
   (when (:monitoring? @state)

@@ -9,6 +9,7 @@
             [et.rec.capture :as capture]
             [et.rec.config :as config]
             [et.rec.devices :as devices]
+            [et.rec.assemble :as assemble]
             [et.rec.export :as export]
             [et.rec.media :as media]
             [et.rec.split :as split]
@@ -38,10 +39,25 @@
   [_req]
   (ok (capture/status)))
 
+(defn create-handler
+  "POST /api/recordings — a new, empty project. A project is one video, built
+  over as many sittings as it takes; this makes the card, and recording into it
+  makes the video."
+  [req]
+  (let [id (store/new-id)]
+    (store/write-meta! id {:id         id
+                           :title      (or (not-empty (get-in req [:body :title])) id)
+                           :created-at (str (java.time.Instant/now))
+                           :status     :empty
+                           :segments   []
+                           :edits      []})
+    {:status 201 :body (store/read-meta id)}))
+
 (defn start-handler
-  "POST /api/record/start — begin a take."
-  [_req]
-  (let [r (capture/start!)]
+  "POST /api/recordings/:id/record/start — record another sitting onto this
+  project. The first one is its opening; every later one is appended."
+  [req]
+  (let [r (capture/start! (get-in req [:params :id]))]
     (if (:error r) (bad r) (ok r))))
 
 (defn stop-handler
@@ -83,15 +99,16 @@
         {:status 404 :body {:error "no such recording"}}))))
 
 (defn upload-audio-handler
-  "POST /api/recordings/:id/audio — the microphone recording for a take, as a
-  WAV body, with `X-Audio-Lead-Ms` saying how long the mic was already running
-  before the first video frame.
+  "POST /api/recordings/:id/segments/:n/audio — the microphone recording for one
+  sitting, as a WAV body, with `X-Audio-Lead-Ms` saying how long the mic was
+  already running before that segment's first video frame.
 
   The browser records the sound because ffmpeg's AVFoundation audio input drops
   roughly 11% of it — see the note in et.rec.capture. This is where that
   recording lands and where it is lined up with the picture."
   [req]
   (let [id   (get-in req [:params :id])
+        n    (some-> (get-in req [:params :n]) parse-long)
         lead (or (some-> (get-in req [:headers "x-audio-lead-ms"]) parse-long) 0)]
     (cond
       (nil? (store/read-meta id))
@@ -103,12 +120,42 @@
       :else
       (let [tmp (java.io.File/createTempFile (str "recorda-" id "-") ".wav")]
         (io/copy (:body req) tmp)
-        (let [res (try (split/finish-audio! id tmp lead)
+        (let [res (try (split/finish-audio! id n tmp lead)
                        (catch Exception e {:ok? false :error (.getMessage e)})
                        (finally (capture/audio-received!)))]
           (if (:ok? res)
             (ok (store/read-meta id))
             (bad {:error (str "could not write audio: " (:error res))})))))))
+
+(defn trim-handler
+  "POST /api/recordings/:id/trim — cut the project's tail at `at` seconds on the
+  assembly timeline, so the next sitting carries on from there.
+
+  Nothing is thrown away: the segment holding that instant gets an `:out` and
+  the ones after it are marked dropped, while every file stays whole. A trim can
+  be undone."
+  [req]
+  (let [id (get-in req [:params :id])
+        ;; Query params arrive from wrap-params string-keyed, while compojure's
+        ;; own route params are keywordised — a distinction that has bitten this
+        ;; suite before. A JSON body is accepted too.
+        at (or (some-> (get-in req [:params "at"]) parse-double)
+               (some-> (get-in req [:body :at]) double))]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? at)                   (bad {:error "at (seconds) required"})
+      :else (let [r (assemble/trim-at! id at)]
+              (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn untrim-handler
+  "POST /api/recordings/:id/untrim — clear every trim and bring back every
+  dropped sitting. Possible because trimming only ever wrote a number."
+  [req]
+  (let [id (get-in req [:params :id])]
+    (if (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such project"}}
+      (let [r (assemble/untrim! id)]
+        (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn export-handler
   "POST /api/recordings/:id/export — mux the take's two tracks into one

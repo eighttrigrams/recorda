@@ -135,20 +135,24 @@
 (defn nudge! [dt] (seek! (+ (position) dt)))
 
 (defn load!
-  "Fetch and decode a take's audio. Decoding is done once and held, because
-   decodeAudioData on every selection would be the stall this design removes."
-  [id]
-  (if (= id (:id @loaded))
+  "Fetch and decode a project's audio. Decoding is done once and held, because
+   decodeAudioData on every selection would be the stall this design removes.
+
+   Keyed on a **version** as well as the id, because the assembly is rebuilt
+   whenever a sitting is appended or a trim moves — same project, different
+   audio, and a cache that only knew the id would go on playing the old one."
+  [id version]
+  (if (= [id version] (:key @loaded))
     (swap! state assoc :ready? true :loading? false)
     (do
       (stop-source!)
       (reset! loaded nil)
       (swap! state assoc :playing? false :offset 0.0 :ready? false :loading? true)
-      (-> (js/fetch (str "/media/" id "/audio.wav"))
+      (-> (js/fetch (str "/media/" id "/audio.wav?v=" version))
           (.then #(.arrayBuffer %))
           (.then #(.decodeAudioData (ensure-ctx!) %))
           (.then (fn [buf]
-                   (reset! loaded {:id id :buf buf})
+                   (reset! loaded {:key [id version] :buf buf})
                    (swap! state assoc :ready? true :loading? false)))
           (.catch (fn [e]
                     (js/console.error "recorda: could not decode audio" e)

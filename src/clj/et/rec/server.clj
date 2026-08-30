@@ -45,15 +45,18 @@
     (GET    "/devices"         [] h/devices-handler)
     (POST   "/devices/refresh" [] h/refresh-devices-handler)
     (GET    "/status"          [] h/status-handler)
-    (POST   "/record/start"    [] h/start-handler)
     (POST   "/record/stop"     [] h/stop-handler)
     (GET    "/recordings"      [] h/list-handler)
+    (POST   "/recordings"      [] h/create-handler)
     (GET    "/recordings/:id"  [] h/get-handler)
     (PUT    "/recordings/:id"  [] h/rename-handler)
     (DELETE "/recordings/:id"  [] h/delete-handler)
     ;; Raw WAV in, not JSON. wrap-json-body leaves a non-JSON content type
     ;; alone, so the body arrives here as the stream it was sent as.
-    (POST   "/recordings/:id/audio" [] h/upload-audio-handler)
+    (POST   "/recordings/:id/record/start"   [] h/start-handler)
+    (POST   "/recordings/:id/segments/:n/audio" [] h/upload-audio-handler)
+    (POST   "/recordings/:id/trim"   [] h/trim-handler)
+    (POST   "/recordings/:id/untrim" [] h/untrim-handler)
     (POST   "/recordings/:id/export" [] h/export-handler)))
 
 (defn- cache-bust []

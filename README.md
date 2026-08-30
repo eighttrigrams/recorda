@@ -127,28 +127,56 @@ terminal, or your editor. Without it every screen probes as an error and the
 Record button stays disabled. System Settings › Privacy & Security › Screen
 Recording.
 
-## A recording is a directory
+## A project is a directory
+
+A **project is one video**, built up over as many sittings as it takes. You make
+a card, open it, and record into it: the first press is the opening, every later
+press is appended. There is no global record button, because there is no such
+thing as recording without somewhere for it to go.
 
 ```
-recordings/2026-08-29-2013-07/
-  video.mp4    picture only, stream-copied out of the capture
-  audio.wav    the microphone, lossless, aligned to the picture
-  peaks.json   what the waveform lane draws
-  meta.edn     everything else
-  ffmpeg.log   what the capture said while it ran
+recordings/2026-08-30-0052-05/
+  segments/001/video.mp4   one sitting, exactly as captured, never modified
+  segments/001/audio.wav
+  segments/002/…           the next sitting, appended
+  video.mp4                the assembly — segments concatenated
+  audio.wav                the assembly
+  peaks.json               what the waveform lane draws
+  meta.edn                 everything else, including the segment list
+  export.mp4               only after you export
 ```
 
 No SQLite, unlike every sibling in this workspace. There is one user, the rows
-are files, and every query this app has is `ls`. A database would add a schema
-to migrate and a second place for the truth to live — and when the two
-disagreed, the files would still be the ones holding the video.
+are files, and every query this app has is `ls`.
 
-The capture is deleted once it has been split, because everything in it now
-lives in those two files, one by stream copy and one losslessly.
-`:keep-capture? true` to keep it, at roughly double the disk.
+## Trim, and record on
 
-**Budget about 45 MB a minute at 1440p.** `recordings/` is gitignored for that
-reason and not as a matter of taste.
+Park the playhead and press **Trim to playhead**: everything after it leaves the
+video, and the next recording carries on from there. That is the whole editing
+model, and it is enough for a screencast — talk, fumble a line, back up a bit,
+carry on.
+
+**A trim is a number, not a deletion.** The segment holding that instant gets an
+`:out`; the ones after it are marked dropped; every file stays whole at its
+original length. So `undo trim` puts all of it back, and nothing you recorded is
+lost until you delete the project.
+
+**None of this re-encodes.** The capture produces h264 with no B-frames and a
+keyframe about every 0.4 s, which makes two operations exact by stream copy:
+cutting a segment's tail, and joining segments end to end. So a project
+assembles in about the time it takes to read and write its bytes, and no
+generation of quality is lost however many times you trim it back and record on.
+
+That asymmetry is *why* the model is append-and-trim rather than general
+cutting. Cutting from the middle would need a keyframe at the resume point and
+cutting from the start would snap to one; the tail does not.
+
+Two things the assembly refuses rather than gets wrong. Stream-copy concat needs
+identical stream parameters, so if the screen changes size between sittings it
+says so instead of writing a file that plays wrong from the join onwards. And a
+segment stays **pending** — holding its number, absent from the video — between
+the moment recording starts and the moment its audio arrives, so a sitting that
+fails leaves no hole.
 
 ## Playing two files as one thing
 

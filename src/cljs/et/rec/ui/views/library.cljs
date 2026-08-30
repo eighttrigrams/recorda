@@ -9,19 +9,27 @@
 (defn library []
   (let [{:keys [recordings selected]} @state/app]
     [:div.panel.library
-     [:h2 "Takes"]
+     [:h2 "Projects"]
+     [:button {:style {:width "100%" :margin-bottom "10px"}
+               :disabled (state/busy?)
+               :on-click #(state/create-project!)}
+      "+ New project"]
      (if (empty? recordings)
-       [:div.empty "Nothing recorded yet."]
+       [:div.empty "No projects yet. Make one, then record into it."]
        (for [t recordings]
          ^{:key (:id t)}
          [:div.take {:class    (when (= (:id t) selected) "selected")
                      :on-click #(state/select! (:id t))}
           [:div.title (:title t)]
           [:div.sub {:class (when (not= "ready" (:status t)) "busy")}
-           (if (= "ready" (:status t))
-             (str (fmt-dur (:duration t)) " · " (:width t) "×" (:height t)
-                  (when-let [db (:peak-dbfs t)] (str " · " (js/Math.round db) " dB")))
-             (:status t))]
+           (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments t)))]
+             (cond
+               (= "ready" (:status t))
+               (str (fmt-dur (:duration t))
+                    (when (> live 1) (str " · " live " parts"))
+                    (when-let [db (:peak-dbfs t)] (str " · " (js/Math.round db) " dB")))
+               (= "empty" (:status t)) "empty — press Record"
+               :else (:status t)))]
           (when (= (:id t) selected)
             [:div {:style {:margin-top "6px" :display "flex" :gap "6px"}}
              [:button.danger

@@ -28,16 +28,17 @@
 (defonce ^:private *state (atom {:status :idle}))
 
 (defn status []
-  (let [{:keys [status id started-at video-started-at screen error]} @*state]
+  (let [{:keys [status id segment started-at video-started-at screen error]} @*state]
     (cond-> {:status status}
       id               (assoc :id id)
+      segment          (assoc :segment segment)
       started-at       (assoc :started-at started-at
                               :elapsed (/ (- (System/currentTimeMillis) started-at) 1000.0))
       video-started-at (assoc :video-started-at video-started-at)
       screen           (assoc :screen screen)
       error            (assoc :error error))))
 
-(defn- capture-args [screen dir]
+(defn- capture-args [screen ^java.io.File dir]
   (let [conf (config/config)]
     ["-y" "-loglevel" "warning"
      "-f" "avfoundation"
@@ -71,63 +72,72 @@
         :else (do (Thread/sleep 15) (recur))))))
 
 (defn start!
-  "Begin the screen capture. Returns the status, including `video-started-at` —
-   the epoch millisecond at which frames began — so the caller can line its own
-   audio up with it."
-  []
+  "Begin recording a new **segment** of the given project.
+
+   A project is one video built over as many sittings as it takes; this is one
+   sitting. The segment is captured whole into its own directory and never
+   modified afterwards — trimming and joining happen in the assembly, so
+   pressing record can only ever add.
+
+   Returns the status, including `video-started-at` — the epoch millisecond at
+   which frames actually began — so the caller can line its own audio up with
+   it."
+  [project-id]
   (locking *state
-    (if (not= :idle (:status @*state))
+    (cond
+      (not= :idle (:status @*state))
       {:error (str "already " (name (:status @*state)))}
+
+      (nil? (store/read-meta project-id))
+      {:error "no such project"}
+
+      :else
       (let [conf   (config/config)
             screen (devices/resolve-screen (:screen conf))]
         (if (or (nil? screen) (:error screen))
           {:error (or (:error screen) "no screen found")}
-          (let [id  (store/new-id)
-                dir (doto (store/dir id) (.mkdirs))
+          (let [n   (store/next-segment-n project-id)
+                dir (doto (store/segment-dir project-id n) (.mkdirs))
                 mkv (java.io.File. ^java.io.File dir "capture.mkv")
-                log (java.io.File. ^java.io.File dir "ffmpeg.log")
+                log (java.io.File. ^java.io.File (store/dir project-id) "ffmpeg.log")
                 p   (ff/spawn (capture-args screen dir) log)
                 vat (await-first-frames! mkv 5000)]
-            (store/write-meta! id {:id         id
-                                   :status     :recording
-                                   :created-at (str (java.time.Instant/now))
-                                   :title      id
-                                   :screen     screen
-                                   :width      (:width screen)
-                                   :height     (:height screen)
-                                   :edits      []})
+            (store/add-segment! project-id n)
+            (store/update-meta! project-id assoc :status :recording)
             (reset! *state {:status :recording
-                            :id id
+                            :id project-id
+                            :segment n
                             :proc p
                             :started-at (System/currentTimeMillis)
                             :video-started-at vat
                             :screen screen})
-            (t/log! :info (str "recording " id " from " (:name screen)))
+            (t/log! :info (str "recording " project-id " segment " n
+                               " from " (:name screen)))
             (status)))))))
 
 (defn stop!
-  "End the capture and produce video.mp4. The take then waits for its audio,
-   which the browser uploads — see POST /api/recordings/:id/audio."
+  "End the sitting and produce the segment's video. The segment then waits for
+   its audio, which the browser uploads."
   []
   (locking *state
-    (let [{:keys [status id ^Process proc]} @*state]
+    (let [{:keys [status id segment ^Process proc]} @*state]
       (if (not= :recording status)
         {:error "not recording"}
         (let [how (ff/quit! proc 15000)]
           (swap! *state assoc :status :processing :proc nil)
-          (store/update-meta! id assoc :status :processing)
           (when (= :forced how)
             (t/log! :warn (str "ffmpeg for " id " ignored q and was killed")))
-          (let [res (try (split/video! id)
+          (let [res (try (split/video! id segment)
                          (catch Exception e
-                           (t/log! :error (str "video split failed for " id ": " (.getMessage e)))
+                           (t/log! :error (str "segment video failed for " id ": " (.getMessage e)))
                            {:ok? false :error (.getMessage e)}))]
             (swap! *state assoc :status :awaiting-audio)
             (if (:ok? res)
-              {:status :awaiting-audio :id id :duration (:duration res)}
-              (do (store/update-meta! id assoc :status :failed :error (:error res))
+              {:status :awaiting-audio :id id :segment segment :duration (:duration res)}
+              (do (store/drop-segment! id segment)
+                  (store/update-meta! id assoc :status :failed :error (:error res))
                   (reset! *state {:status :idle})
-                  {:error (str "video split failed: " (:error res))}))))))))
+                  {:error (str "segment video failed: " (:error res))}))))))))
 
 (defn audio-received!
   "Called once the browser's audio has been written and the take finished."

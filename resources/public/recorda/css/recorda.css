@@ -172,3 +172,12 @@ body { max-width: 1600px; }
 .meter-read.low  { color: var(--record); }
 .meter-read.hot  { color: var(--record); }
 .meter-read.good { color: var(--text-secondary); }
+
+/* --- the project pane's own header -------------------------------------- */
+.project-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.project-head h2 {
+  margin: 0; font-size: 1.05em; font-weight: 600; text-transform: none;
+  letter-spacing: -0.01em; color: var(--text-primary); cursor: text;
+}
+.project-head .spacer { flex: 1 1 auto; }
+.transport .spacer { flex: 1 1 auto; }

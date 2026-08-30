@@ -27,8 +27,7 @@
     [:h1 "recorda"]
     [recorder/devices-strip]
     [:div.spacer]
-    [build-stamp]
-    [recorder/record-button]]
+    [build-stamp]]
    (when-let [e (:error @state/app)]
      [:div.panel {:style {:margin-bottom "12px" :color "var(--record)"}} e])
    [:div.columns
