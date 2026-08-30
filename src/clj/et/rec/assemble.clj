@@ -11,12 +11,13 @@
    The asymmetry that shapes everything below: a copy can *end* anywhere,
    because every frame it keeps still has the frames it references, but it can
    only *begin* at a keyframe. A trim therefore stays frame-accurate and free.
-   An insert has to resume from somewhere, so its cut lands on the nearest
-   keyframe — up to about 0.2 s from where it was asked for — and the playhead
+   Recording at the playhead has to resume from somewhere, so its cut lands on
+   the nearest keyframe — up to about 0.2 s from where it was asked for — and the playhead
    is moved to where it actually landed rather than being told a comfortable
    lie."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [et.rec.config :as config]
             [et.rec.ff :as ff]
             [et.rec.peaks :as peaks]
             [et.rec.store :as store]))
@@ -40,6 +41,24 @@
     (io/delete-file d true)))
 
 ;; --- cutting ---------------------------------------------------------------
+
+(defn- half-frame
+  "Half the interval between two frames, at the rate this app captures.
+
+   **The frame at `out` belongs to the next piece, not this one.** `-t` with a
+   stream copy keeps every packet whose timestamp is *at or before* the end it
+   is given, so asking for exactly the piece's length hands back one frame too
+   many — measured: 121 frames where 120 belong, and a piece 34 ms longer than
+   the arrangement says it is. Every marker then grew the video by a frame, and
+   they accumulate.
+
+   Stopping half a frame short is the honest way to say \"up to but not
+   including\": it always excludes the frame sitting exactly on the boundary,
+   and for a cut that does not land on one it rounds to the nearest frame
+   instead of always rounding up. A millisecond is not enough — the timestamps
+   round at about that scale, and `-t 3.999` still kept the frame at 4.000."
+  []
+  (/ 0.5 (double (config/get-conf :framerate 30))))
 
 (def ^:private seek-nudge
   "How far past a keyframe to ask ffmpeg to seek.
@@ -84,7 +103,7 @@
           src-v (store/segment-file id seg "video.mp4")
           src-a (store/segment-file id seg "audio.wav")
           k     (if (> (double in) 0.001) (snap-point id seg in) 0.0)
-          len   (max 0.05 (- (double out) k))
+          len   (max 0.05 (- (double out) k (half-frame)))
           head  (if (pos? k)
                   ["-ss" (fmt (+ k seek-nudge))]
                   [])
@@ -193,8 +212,9 @@
 
    `snap?` asks for the cut to land on a keyframe, and only an operation that
    something must *resume* from needs it. A trim throws the tail away, so it
-   passes false and stays frame-accurate; an insert keeps the tail and has to
-   start a copy at it, so it passes true and pays up to a keyframe interval.
+   passes false and stays frame-accurate; recording at the playhead keeps the
+   tail and has to start a copy at it, so it passes true and pays up to a
+   keyframe interval.
 
    Whichever it is, **both halves are cut at the same instant**. Giving the
    near side the exact time and the far side a snapped one is how you get
@@ -234,9 +254,9 @@
                (+ (:starts-at hit) (- k (:in hit)))])))))))
 
 (defn landing-point
-  "Where an insert at `at` would actually cut, once the keyframe has had its
-   say. The UI asks before recording so the playhead can be moved to the truth
-   rather than claiming an accuracy the format does not have."
+  "Where a cut at `at` would actually land, once the keyframe has had its say.
+   The UI asks before recording so it can show the truth rather than claim an
+   accuracy the format does not have."
   [id at]
   (nth (split-arrangement id (store/clip-span id) at true) 2))
 
@@ -276,10 +296,6 @@
         fresh {:seg n}]
     (case mode
       :at-playhead
-      (let [[before _ _] (split-arrangement id spans at false)]
-        (store/set-clips! id (conj (vec before) fresh)))
-
-      :insert
       (let [[before after _] (split-arrangement id spans at true)]
         (store/set-clips! id (vec (concat before [fresh] after))))
 
@@ -289,11 +305,125 @@
       (when (seq (:clips (store/read-meta id)))
         (store/set-clips! id (conj (mapv store/strip-clip spans) fresh))))))
 
+(defn- coalesce
+  "Adjacent pieces of the same sitting that meet end to start are one piece.
+
+   This is what makes deleting an insertion leave no trace. Recording into the
+   middle of a sitting cuts it in two; take the inserted piece away again and
+   the two halves are once more continuous material with a pointless cut
+   between them. Rejoining them removes a seam that would otherwise mark a join
+   where nothing is joined."
+  [id cs]
+  (reduce (fn [acc c]
+            (let [p (peek acc)]
+              (if (and p (= (:seg p) (:seg c))
+                       (< (Math/abs (- (double (:out p)) (double (:in c)))) 1.0e-3))
+                (let [d (double (or (store/segment-duration id (:seg p)) 0.0))
+                      m (assoc p :out (:out c))]
+                  (conj (pop acc)
+                        (assoc m :whole? (and (< (double (:in m)) 0.001)
+                                              (> (double (:out m)) (- d 0.001))))))
+                (conj acc c))))
+          []
+          cs))
+
+(defn- plain?
+  "Whether an arrangement says exactly what no arrangement would say: every
+   sitting, whole, in the order it was recorded."
+  [id cs]
+  (and (every? :whole? cs)
+       (= (mapv :seg cs) (mapv :n (store/segments id)))))
+
+(defn delete-clip!
+  "Remove one piece from the arrangement.
+
+   The sitting behind it is untouched and stays on disk, like everything else
+   here — this only stops the piece being played. So deleting the wrong one
+   costs a press of `undo edits`.
+
+   If what is left is what no arrangement would say — every sitting, whole, in
+   order — the arrangement is dropped rather than written out. A project edited
+   back to plain should not go on claiming to be edited."
+  [id i]
+  (let [cs (store/clips id)]
+    (cond
+      (not (< -1 i (count cs)))
+      {:ok? false :error "no such piece"}
+
+      (= 1 (count cs))
+      {:ok? false :error "that is the only piece there is"}
+
+      :else
+      (let [kept (coalesce id (vec (concat (take i cs) (drop (inc i) cs))))]
+        (if (plain? id kept)
+          (store/clear-clips! id)
+          (store/set-clips! id (mapv store/strip-clip kept)))
+        (assemble! id)))))
+
+(defn split-at!
+  "Mark a split at `at` seconds: one piece becomes two, and **nothing about
+   what plays changes**.
+
+   A marker is not an edit. It is the handle an edit needs: put two of them
+   round something and the piece between them can be deleted, which is how you
+   cut from the middle without a mode for it.
+
+   The cut lands on a keyframe, for the reason everything else here does — the
+   second piece has to resume from it. Splitting and rejoining at a keyframe is
+   exact: measured on a real recording, same duration, same frame count, and
+   the audio subtracts to silence. So a project can carry any number of markers
+   and still be the recording that came off the screen."
+  [id at]
+  (let [spans (store/clip-span id)]
+    (if (empty? spans)
+      {:ok? false :error "nothing to split"}
+      (let [[before after landed] (split-arrangement id spans at true)]
+        (if (or (empty? before) (empty? after))
+          {:ok? false :error "that is already an end"}
+          (do (store/set-clips! id (vec (concat before after)))
+              (assoc (assemble! id) :at landed)))))))
+
+(defn- addition?
+  "Whether a marker is one somebody put there, rather than a place where the
+   material genuinely changes.
+
+   Two pieces of the *same* sitting meeting end to start are continuous
+   material with a mark drawn on it, and taking the mark away restores what was
+   always true. Two different sittings meeting is not a mark at all — it is the
+   join, and there is nothing to restore it to."
+  [a b]
+  (and (= (:seg a) (:seg b))
+       (< (Math/abs (- (double (:out a)) (double (:in b)))) 1.0e-3)))
+
+(defn delete-seam!
+  "Remove one marker, so the two pieces either side of it become one again."
+  [id i]
+  (let [cs (store/clips id)]
+    (cond
+      (not (< -1 i (dec (count cs))))
+      {:ok? false :error "no such marker"}
+
+      (not (addition? (nth cs i) (nth cs (inc i))))
+      {:ok? false :error "that is where two sittings meet, not a marker — delete a piece instead"}
+
+      :else
+      (let [a      (nth cs i)
+            b      (nth cs (inc i))
+            d      (double (or (store/segment-duration id (:seg a)) 0.0))
+            merged (let [m (assoc a :out (:out b))]
+                     (assoc m :whole? (and (< (double (:in m)) 0.001)
+                                           (> (double (:out m)) (- d 0.001)))))
+            kept   (vec (concat (take i cs) [merged] (drop (+ i 2) cs)))]
+        (if (plain? id kept)
+          (store/clear-clips! id)
+          (store/set-clips! id (mapv store/strip-clip kept)))
+        (assemble! id)))))
+
 (defn untrim!
   "Back to plain appended segments: every edit cleared, every sitting back, in
    the order they were recorded. Possible because editing only ever wrote an
-   arrangement — an inserted sitting is not lost by this, it goes back to being
-   the last one."
+   arrangement — a sitting recorded into the middle is not lost by this, it goes
+   back to being the last one."
   [id]
   (store/clear-clips! id)
   (assemble! id))

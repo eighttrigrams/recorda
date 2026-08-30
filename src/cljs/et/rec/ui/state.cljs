@@ -68,14 +68,33 @@
 (defn fetch-status!
   "Also refreshes the library on the edge where a take finishes, so the new
    row appears without the user reloading. Comparing against the previous
-   status is what makes that one fetch instead of one per second."
+   status is what makes that one fetch instead of one per second.
+
+   `:stuck-polls` counts consecutive polls that found the server waiting for
+   audio this browser is not sending. Since this browser is the only thing that
+   ever uploads any, a run of those means the take can no longer be finished —
+   and a few seconds of it, rather than one poll, so that the ordinary gap
+   between stopping and the upload starting never shows an alarm."
   []
   (let [was (get-in @app [:status :status])]
     (api/GET "/api/status"
              (fn [s]
-               (swap! app assoc :status s)
+               (swap! app
+                      (fn [a]
+                        (-> a
+                            (assoc :status s)
+                            (update :stuck-polls
+                                    #(if (and (= "awaiting-audio" (:status s))
+                                              (not (:uploading? a)))
+                                       (inc (or % 0))
+                                       0)))))
                (when (and (= was "processing") (= (:status s) "idle"))
                  (fetch-recordings!))))))
+
+(defn stuck?
+  "The server is holding a take open for audio that is not coming."
+  []
+  (> (or (:stuck-polls @app) 0) 3))
 
 (defn- upload-audio!
   "Send the microphone recording for a take, with the lead time that lines it
@@ -99,7 +118,10 @@
       (.catch (fn [e]
                 (swap! app assoc :uploading? false :record-mode :append :record-at nil
                        :error (str "could not send the audio: " e))
-                (fetch-status!)))))
+                ;; Nothing else will ever finish this take, so say so rather
+                ;; than leaving the server waiting on a browser that has given
+                ;; up.
+                (api/POST "/api/record/abandon" (fn [_] (fetch-status!)) (fn [_] (fetch-status!)))))))
 
 (defn create-project!
   "Make a new, empty project and open it. A project is one video; recording
@@ -121,8 +143,8 @@
 
 (defn untrim!
   "Clear every edit: back to plain appended sittings, in the order they were
-   recorded. An inserted sitting goes back to being the last one — it is not
-   lost, because nothing ever moved but the arrangement."
+   recorded. A sitting recorded into the middle goes back to being the last one
+   — it is not lost, because nothing ever moved but the arrangement."
   [id]
   (api/POST (str "/api/recordings/" id "/untrim")
             (fn [_] (fetch-recordings!) (select! id))
@@ -143,7 +165,7 @@
    **Where it lands is decided now and applied later.** The mode and the
    playhead go with the request, the server writes them down, and the
    arrangement only moves once the sitting has produced something — so a take
-   that fails leaves the project as it was. For an insert the server answers
+   that fails leaves the project as it was. Recording at the playhead answers
    with the position it will really cut at, which is the nearest keyframe and
    not necessarily the one asked for."
   [project-id]
@@ -186,6 +208,52 @@
             (fn [e]
               (mic/cancel!)
               (swap! app assoc :error (or (get-in e [:response :error]) "could not stop")))))
+
+(defn abandon!
+  "Give up on a sitting the browser can no longer finish.
+
+   The picture is captured on the server and the sound here, so a failed upload
+   leaves a take only this side knows is never going to complete. Saying so is
+   what lets the app record again — without it the server waits for audio
+   forever and only a restart clears it."
+  []
+  (api/POST "/api/record/abandon"
+            (fn [_] (swap! app assoc :uploading? false :record-mode :append :record-at nil)
+                    (fetch-status!) (fetch-recordings!))
+            (fn [_] (swap! app assoc :error "could not give up on that take"))))
+
+(defn delete-clip!
+  "Drop one piece from the open project's arrangement.
+
+   Nothing leaves the disk — the sitting behind the piece stays whole, so this
+   is undoable with `undo edits`."
+  [id i]
+  (swap! app assoc :error nil)
+  (api/DELETE (str "/api/recordings/" id "/clips/" i)
+              (fn [_] (fetch-recordings!) (select! id))
+              #(swap! app assoc :error (or (get-in % [:response :error])
+                                           "could not delete that piece"))))
+
+(defn split-at!
+  "Put a marker at `at` seconds on the open project.
+
+   Changes nothing about what plays — it only cuts one piece into two, so that
+   there is something to take hold of."
+  [id at]
+  (swap! app assoc :error nil)
+  (api/POST (str "/api/recordings/" id "/split?at=" at)
+            (fn [_] (fetch-recordings!) (select! id))
+            #(swap! app assoc :error (or (get-in % [:response :error])
+                                         "could not put a marker there"))))
+
+(defn delete-seam!
+  "Remove a marker, so the two pieces either side of it become one again."
+  [id i]
+  (swap! app assoc :error nil)
+  (api/DELETE (str "/api/recordings/" id "/seams/" i)
+              (fn [_] (fetch-recordings!) (select! id))
+              #(swap! app assoc :error (or (get-in % [:response :error])
+                                           "could not remove that marker"))))
 
 (defn delete! [id]
   (api/DELETE (str "/api/recordings/" id)

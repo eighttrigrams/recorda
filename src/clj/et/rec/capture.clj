@@ -18,7 +18,8 @@
    So the microphone is captured in the browser instead — see et.rec.ui.mic —
    which loses 91 ms in five minutes rather than 11% in every second. What is
    left here is the screen, which ffmpeg captures perfectly well."
-  (:require [et.rec.assemble :as assemble]
+  (:require [clojure.java.io :as io]
+            [et.rec.assemble :as assemble]
             [et.rec.config :as config]
             [et.rec.devices :as devices]
             [et.rec.ff :as ff]
@@ -79,9 +80,13 @@
 
    `:append` puts it on the end and is the default — a screencast is recorded
    roughly in order, and this is what pressing Record means most of the time.
-   `:at-playhead` replaces everything from `:at` onward. `:insert` splices it in
-   at `:at` and keeps what followed."
-  #{:append :at-playhead :insert})
+   `:at-playhead` splices it in at `:at` and keeps what followed.
+
+   There is deliberately no mode for *replacing* from the playhead. Trimming to
+   the playhead and then appending already is that, in two presses that are each
+   reversible on their own, and a third mode doing the same thing by another
+   route is a third thing to explain and to get wrong."
+  #{:append :at-playhead})
 
 (defn start!
   "Begin recording a new **segment** of the given project.
@@ -95,9 +100,9 @@
    than acted on**. Replacing from the playhead is not a trim followed by a
    record: the arrangement is left alone until the sitting has actually
    produced something, so a take that fails leaves the project untouched. For
-   `:insert` the position is snapped to a keyframe here, and the snapped one is
-   what comes back, so the caller can move its playhead to where the cut will
-   really land.
+   `:at-playhead` the position is snapped to a keyframe here, and the snapped
+   one is what comes back, so the caller can show where the cut will really
+   land.
 
    Returns the status, including `video-started-at` — the epoch millisecond at
    which frames actually began — so the caller can line its own audio up with
@@ -119,7 +124,7 @@
                screen (devices/resolve-screen (:screen conf))]
            (if (or (nil? screen) (:error screen))
              {:error (or (:error screen) "no screen found")}
-             (let [at  (if (= :insert mode)
+             (let [at  (if (= :at-playhead mode)
                          ;; Rounded to the microsecond: the answer goes into
                          ;; meta.edn and back to the browser, and neither wants
                          ;; to read 6.066000000000001.
@@ -183,3 +188,36 @@
   "Called once the browser's audio has been written and the take finished."
   []
   (locking *state (reset! *state {:status :idle})))
+
+(defn abandon!
+  "Give up on a sitting, and let the app record again.
+
+   The picture is captured here and the sound in the browser, so between
+   stopping and the upload landing there is a moment when only the browser can
+   finish the take. If it never does — the tab was closed, the upload failed,
+   the machine slept — this used to sit at `awaiting-audio` forever, and since
+   that is not `idle` nothing could be recorded again until the server was
+   restarted. A state only a restart can leave is not a state to leave in.
+
+   The sitting is dropped and its directory removed: what is on disk is a
+   picture with no sound, which cannot be part of a video and would otherwise
+   accumulate. Nothing already in the project is touched — the assembly never
+   contained a pending sitting."
+  []
+  (locking *state
+    (let [{:keys [status id segment ^Process proc]} @*state]
+      (if (= :idle status)
+        {:status :idle}
+        (do
+          (when proc (.destroyForcibly proc))
+          (when (and id segment (store/read-meta id))
+            (store/drop-segment! id segment)
+            (let [d (store/segment-dir id segment)]
+              (doseq [f (.listFiles d)] (io/delete-file f true))
+              (io/delete-file d true))
+            (store/update-meta! id #(-> (dissoc % :pending-op)
+                                        (assoc :status (if (seq (store/segments id))
+                                                         :ready :empty)))))
+          (t/log! :warn (str "abandoned " id " segment " segment " from " (name status)))
+          (reset! *state {:status :idle})
+          {:abandoned true :id id :segment segment})))))

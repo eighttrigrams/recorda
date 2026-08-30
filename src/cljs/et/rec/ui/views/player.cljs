@@ -112,18 +112,13 @@
 
 ;; --- the lanes -------------------------------------------------------------
 
-(defn- seams
-  "Where one piece of recording meets another, in seconds.
+(defn- pieces
+  "The project's pieces laid out on the timeline: `{:i :seg :starts-at :ends-at}`.
 
-   Bookkeeping, not an edit handle: it is the one thing about a project you
-   cannot see from the picture or hear from the sound, because a join by stream
-   copy leaves no mark. After an insert there are more of these than there are
-   sittings — a segment cut in two shows a seam at the cut as well as at its
-   ends — which is exactly the thing worth being able to look at.
-
-   Computed from the arrangement when there is one and from the sittings when
-   there is not, so it reads the same before and after the first edit. The last
-   boundary is dropped: the end of the video is not a seam."
+   The same walk the server does, so the index this hands back is the index the
+   server will act on. Computed from the arrangement when there is one and from
+   the sittings when there is not, so it reads the same before and after the
+   first edit."
   [take]
   (let [durs (into {} (map (juxt :n :duration)) (:segments take))
         cs   (if (seq (:clips take))
@@ -131,14 +126,160 @@
                (->> (:segments take)
                     (remove :dropped) (remove :pending) (sort-by :n)
                     (map (fn [s] {:seg (:n s) :out (or (:out s) (:duration s))}))))]
-    (->> cs
-         (reduce (fn [{:keys [at acc]} c]
-                   (let [d   (or (get durs (:seg c)) 0)
-                         end (+ at (- (or (:out c) d) (or (:in c) 0)))]
-                     {:at end :acc (conj acc end)}))
-                 {:at 0 :acc []})
-         :acc
-         butlast)))
+    (:acc (reduce (fn [{:keys [at acc]} c]
+                    (let [d   (or (get durs (:seg c)) 0)
+                          in  (or (:in c) 0)
+                          out (or (:out c) d)
+                          end (+ at (- out in))]
+                      {:at  end
+                       :acc (conj acc {:i (count acc) :seg (:seg c)
+                                       :in in :out out
+                                       :starts-at at :ends-at end})}))
+                  {:at 0 :acc []}
+                  cs))))
+
+(defn- seams
+  "Every marker on the timeline: `{:i :at :added?}`.
+
+   A join by stream copy leaves no mark you can see in the picture or hear in
+   the sound, so this is the only place a project's construction is visible.
+
+   `:added?` separates the two kinds, and the difference is not cosmetic. Two
+   pieces of the *same* sitting meeting end to start are continuous material
+   with a mark drawn on it, and the mark can be taken away again. Two different
+   sittings meeting is the join itself — there is nothing to restore it to, and
+   a menu that offered to remove it would be offering to weld unrelated
+   material together.
+
+   Marker `i` sits between piece `i` and piece `i+1`; the end of the video is
+   not a marker."
+  [take]
+  (let [ps (vec (pieces take))]
+    (vec (for [i (range (dec (count ps)))
+               :let [a (nth ps i) b (nth ps (inc i))]]
+           {:i i
+            :at (:ends-at a)
+            :added? (and (= (:seg a) (:seg b))
+                         (< (js/Math.abs (- (:out a) (:in b))) 0.001))}))))
+
+(defn- piece-at
+  "The piece a point on the timeline falls in."
+  [take t]
+  (first (filter #(and (>= t (:starts-at %)) (< t (:ends-at %))) (pieces take))))
+
+;; The piece menu. Right-click a lane and it opens on the piece under the
+;; pointer — deliberately the app's own and not the browser's, because the one
+;; thing it must show is *which* piece is about to go, and a system menu cannot
+;; highlight anything behind it.
+(defonce ^:private piece-menu (r/atom nil))
+(defonce ^:private _close-menu
+  (do (.addEventListener js/document "click" #(reset! piece-menu nil))
+      (.addEventListener js/document "keydown"
+                         #(when (= "Escape" (.-key %)) (reset! piece-menu nil)))))
+
+(defn- open-piece-menu! [take e]
+  (.preventDefault e)
+  (.stopPropagation e)
+  (let [rect (.getBoundingClientRect (.-currentTarget e))
+        frac (/ (- (.-clientX e) (.-left rect)) (.-width rect))
+        dur  (or (:duration take) 0)
+        t    (* (max 0 (min 0.999 frac)) dur)]
+    (when-let [p (piece-at take t)]
+      ;; Carries the project it was opened on. A menu is an *index*, and an
+      ;; index means nothing against a different project — so switching while it
+      ;; is open must not leave a live button pointing at someone else's piece.
+      (reset! piece-menu (assoc p :kind :piece :id (:id take)
+                                  :x (.-clientX e) :y (.-clientY e)
+                                  :confirm? false)))))
+
+(defn- open-seam-menu! [take seam e]
+  (.preventDefault e)
+  (.stopPropagation e)
+  (reset! piece-menu (assoc seam :kind :seam :id (:id take)
+                                 :x (.-clientX e) :y (.-clientY e)
+                                 :confirm? false)))
+
+(defn- split-here! [take e]
+  (let [rect (.getBoundingClientRect (.-currentTarget e))
+        frac (/ (- (.-clientX e) (.-left rect)) (.-width rect))
+        dur  (or (:duration take) 0)]
+    (reset! piece-menu nil)
+    (state/split-at! (:id take) (* (max 0 (min 1 frac)) dur))))
+
+(defn- piece-highlight
+  "The extent of the piece the menu is open on, shaded inside each lane.
+
+   The point of the whole gesture is knowing what will go, and with two seams
+   close together the pointer alone does not say. It is drawn in the lane body
+   rather than across the lanes because that is what the times are measured
+   against."
+  [take]
+  (let [m   @piece-menu
+        dur (or (:duration take) 0)]
+    (when (and m (= :piece (:kind m)) (= (:id m) (:id take)) (pos? dur))
+      [:div.piece-hi {:style {:left  (str (* 100 (/ (:starts-at m) dur)) "%")
+                              :width (str (* 100 (/ (- (:ends-at m) (:starts-at m)) dur)) "%")}}])))
+
+(defn- piece-menu-view
+  "The app's own menu, not the browser's.
+
+   The reason it is not the system one is the highlight: what a delete needs
+   above all is for you to see *which* piece is about to go, and a system menu
+   cannot shade anything behind it.
+
+   Two presses for anything destructive. It is still undoable — `undo edits`
+   puts the whole arrangement back and nothing has left the disk — but the
+   moment of pressing should not be the moment you find that out."
+  [take]
+  (when-let [m (let [m @piece-menu] (when (= (:id m) (:id take)) m))]
+    (let [n-pieces (count (pieces take))
+          seam?    (= :seam (:kind m))
+          ;; A marker between two different sittings is the join, not something
+          ;; anybody added, so there is nothing to take away.
+          fixed?   (and seam? (not (:added? m)))]
+      [:div.piece-menu {:style {:left (:x m) :top (:y m)}
+                        ;; The document-level listener closes this; without
+                        ;; stopping the bubble it would close on its own buttons.
+                        :on-click #(.stopPropagation %)
+                        :on-context-menu #(.preventDefault %)}
+       [:div.piece-menu-head
+        (if seam?
+          [:span "Marker at " (fmt (:at m))]
+          [:span "Piece " (inc (:i m)) " of " n-pieces])
+        [:span.piece-menu-sub
+         (cond
+           fixed? "where two sittings meet"
+           seam?  "a marker you put here"
+           :else  (str "sitting " (:seg m) " · "
+                       (fmt (:starts-at m)) "–" (fmt (:ends-at m))))]]
+       (cond
+         fixed?
+         [:div.piece-menu-note
+          "This is the join between two sittings, not a marker — there is
+           nothing to restore it to. Delete a piece instead."]
+
+         (:confirm? m)
+         [:div.piece-menu-confirm
+          [:span (if seam? "Remove it?" "Delete it?")]
+          [:button.danger
+           {:on-click (fn [_]
+                        (if seam?
+                          (state/delete-seam! (:id take) (:i m))
+                          (state/delete-clip! (:id take) (:i m)))
+                        (reset! piece-menu nil))}
+           (if seam? "yes, remove" "yes, delete")]
+          [:button {:on-click #(swap! piece-menu assoc :confirm? false)} "cancel"]]
+
+         :else
+         [:button.piece-menu-item
+          {:disabled (or (state/busy?) (and (not seam?) (< n-pieces 2)))
+           :title (if seam?
+                    "Rejoins the two pieces either side. Nothing about what plays changes."
+                    (if (< n-pieces 2)
+                      "There is only one piece — trim it, or delete the project"
+                      "Stops this piece being played. The sitting behind it stays whole on disk."))
+           :on-click #(swap! piece-menu assoc :confirm? true)}
+          (if seam? "Remove this marker" "Delete this piece")])])))
 
 (defn- lanes [take]
   (let [peaks (:peaks @state/app)
@@ -150,21 +291,40 @@
     [:div.lanes
      [:div.lane.lane-video
       [:div.lane-label "Video"]
-      [:div.lane-body {:on-click seek-from-event}
-       [:div.video-strip]]]
+      ;; Double-click marks a split. It is the counterpart of right-click:
+      ;; one makes a handle, the other uses it. Both live on the lane because
+      ;; the lane is where the timeline is.
+      [:div.lane-body {:on-click seek-from-event
+                       :on-double-click #(split-here! take %)
+                       :on-context-menu #(open-piece-menu! take %)}
+       [:div.video-strip]
+       [piece-highlight take]]]
      [:div.lane.lane-audio
       [:div.lane-label "Audio"]
-      [:div.lane-body {:on-click seek-from-event}
+      [:div.lane-body {:on-click seek-from-event
+                       :on-double-click #(split-here! take %)
+                       :on-context-menu #(open-piece-menu! take %)}
        (if peaks
          [waveform (:peaks peaks)]
-         [:div.empty {:style {:padding "8px"}} "reading waveform…"])]]
+         [:div.empty {:style {:padding "8px"}} "reading waveform…"])
+       [piece-highlight take]]]
      ;; Positioned exactly the way the playhead is, so a seam and the playhead
      ;; sitting on the same instant land on the same pixel.
      (when (pos? dur)
-       (for [t (seams take)]
-         ^{:key (str t)}
-         [:div.seam {:style {:left (str "calc(58px + (100% - 58px) * " (/ t dur) ")")}
-                     :title (str "join at " (fmt t))}]))
+       (for [{:keys [i at added?]} (seams take)]
+         ^{:key (str i "-" at)}
+         [:div.seam {:class (when added? "added")
+                     :style {:left (str "calc(58px + (100% - 58px) * " (/ at dur) ")")}}
+          ;; The head is the only part that takes a pointer — the line itself
+          ;; stays out of the way so it never intercepts a click meant for the
+          ;; lane underneath it.
+          [:div.seam-head
+           {:title (str (if added? "marker" "join") " at " (fmt at)
+                        " — right-click"
+                        (when-not added? " (a join cannot be removed)"))
+            :on-context-menu #(open-seam-menu! take {:i i :at at :added? added?} %)
+            :on-click #(.stopPropagation %)
+            :on-double-click #(.stopPropagation %)}]]))
      [:div.playhead {:ref   #(reset! playhead-el %)
                      :class (when armed "armed")
                      :style {:left "58px"}}]]))
@@ -262,8 +422,8 @@
 
 (defn- edited?
   "Whether the project has an arrangement of its own rather than the plain
-   appended reading. True after a trim, a replace or an insert — all three are
-   the same kind of thing to undo."
+   appended reading. True after a trim and after recording into the middle —
+   both are the same kind of thing to undo."
   [take]
   (boolean (or (seq (:clips take))
                (some #(or (:out %) (:dropped %)) (:segments take)))))
@@ -340,14 +500,16 @@
                        :disabled (:exporting? @state/app)}
               (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
             [lanes take]
+            [piece-menu-view take]
             [:div.meta-line
              [:span (:width take) "×" (:height take)]
              (let [live (count (remove #(or (:dropped %) (:pending %)) (:segments take)))
                    cl   (count (:clips take))]
                [:span (if (= 1 live) "one sitting" (str live " sittings"))
                 ;; More clips than sittings means a sitting was cut in two by
-                ;; an insert, which is worth seeing: it is the only place the
-                ;; arrangement stops being one-piece-per-recording.
+                ;; a recording at the playhead, which is worth seeing: it is
+                ;; the only place the arrangement stops being
+                ;; one-piece-per-sitting.
                 (when (> cl live) (str ", " cl " pieces"))])
              (when-let [c (:crop take)]
                [:span "crop " (:w c) "×" (:h c) " — applied on export"])

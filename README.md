@@ -158,18 +158,22 @@ says which piece of which sitting plays, and in what order. Everything you can
 do to a project is a change to the arrangement, which is why all of it is
 reversible: no edit has ever touched a file.
 
-Beside **Record** are three modes, and they say where the material from the next
+Beside **Record** are two modes, and they say where the material from the next
 press will land.
 
 | mode | what it does |
 |---|---|
 | **Append** | on the end. The default, and what a screencast usually wants. |
-| **At playhead** | replaces everything from the playhead onward. |
-| **Insert** | spliced in at the playhead; what followed is kept and comes after. |
+| **At playhead** | into the middle: it goes in at the playhead and what followed is kept. |
 
 The picker **resets to Append after every take**. A mode that quietly survives
 is a mode that eats a minute of material while you think you are adding to the
 end.
+
+There is deliberately **no mode for replacing** from the playhead. Trim to
+playhead and then record already is that, in two presses that are each
+reversible on their own — a third mode reaching the same place by another route
+would be one more thing to explain and one more thing to get wrong.
 
 **Nothing is rearranged until the sitting finishes.** The mode is written down
 when you press Record and applied when the audio lands, so a take that fails or
@@ -177,12 +181,12 @@ is cancelled leaves the project exactly as it was. That is why replacing from
 the playhead is one action and not a trim followed by a record — a trim is
 reversible, but a half-done operation is still a bad thing to be handed.
 
-**Trim to playhead** is the fourth thing and needs no mode: park the playhead,
-press it, and the video stops there.
+**Trim to playhead** is the other half of that: park the playhead, press it, and
+the video stops there. Then record, and the take carries on from where you cut.
 
 `undo edits` clears the arrangement and puts the project back to plain appended
-sittings in the order they were recorded. An inserted sitting is not lost by
-that — it goes back to being the last one.
+sittings in the order they were recorded. A sitting recorded into the middle is
+not lost by that — it goes back to being the last one.
 
 ## What a copy can and cannot do
 
@@ -196,10 +200,11 @@ only begin at a keyframe.** Every frame a cut keeps still has the frames it
 references, so cutting a tail is free and exact — which is why a trim and a
 replace are frame-accurate.
 
-An insert is not, because something has to *resume* after it. That cut lands on
-the nearest keyframe, up to about 0.2 s from where you asked, and the app tells
-you where it will really land rather than claiming an accuracy the format does
-not have: arm Insert and the position beside the picker is the snapped one.
+Recording at the playhead is not, because something has to *resume* after it.
+That cut lands on the nearest keyframe, up to about 0.2 s from where you asked,
+and the app tells you where it will really land rather than claiming an accuracy
+the format does not have: arm **At playhead** and the position beside the picker
+is the snapped one.
 
 **The trap that costs a day if you get it wrong.** Audio has no keyframe
 constraint — a WAV cuts at any sample — so it is tempting to cut the sound at
@@ -213,15 +218,48 @@ the millisecond, same frame count, and subtracting the rejoined audio from the
 original leaves **max difference 0.000000**. A seam by stream copy costs
 nothing, which is exactly why the lanes have to draw one — see below.
 
-## Seams
+**And a piece stops half a frame short of its end**, which is not fussiness.
+`-t` on a stream copy keeps every packet at or *before* the end it is given, so
+asking for exactly the piece's length hands back one frame too many: 121 frames
+where 120 belong, and a piece 34 ms longer than the arrangement says. Every
+marker then grew the video by a frame and they accumulated. Half a frame is the
+honest way to say "up to but not including" — and a millisecond is not enough,
+because the timestamps round at about that scale and `-t 3.999` still kept the
+frame at 4.000. With it, nine pieces and six markers give **962 frames, exactly
+what the unmarked original has.**
 
-The lanes mark every join with a dashed tick. It is bookkeeping, not a handle:
-a join by stream copy leaves no mark you can see in the picture or hear in the
-sound, so this is the only place a project's construction is visible.
+## Markers and pieces
 
-After an insert there are more seams than sittings, because a sitting cut in two
-shows a seam at the cut as well as at its ends. The line under the player says
-so too — *3 sittings, 4 pieces*.
+A project plays as a row of **pieces** with **markers** between them, and the
+lanes draw both. A join by stream copy leaves no mark you can see in the picture
+or hear in the sound, so this is the only place a project's construction is
+visible.
+
+- **Double-click a lane** to put a marker there. It changes nothing about what
+  plays — it only cuts one piece into two, so that there is something to take
+  hold of.
+- **Right-click a piece** for its menu: how long it is, which sitting it came
+  from, and *delete*. The piece is shaded while the menu is open, because with
+  two markers close together the pointer alone does not say which one will go.
+- **Right-click a marker's head** — the small square at the top — to remove it,
+  rejoining the pieces either side.
+
+Two markers and a delete is how you cut something out of the middle, and it is
+why there is no mode for that. Everything destructive asks twice.
+
+**Not every marker can be removed.** One you put inside a sitting is a mark
+drawn on continuous material, and taking it away restores what was always true.
+The boundary between two *different* sittings is the join itself — there is
+nothing to restore it to, and a menu offering to remove it would be offering to
+weld unrelated material together. The two are drawn differently and the menu
+says which is which.
+
+Deleting a piece leaves nothing behind: the sitting behind it stays whole on
+disk, so a wrong one costs an `undo edits`. If taking a piece out leaves two
+halves of one sitting meeting end to start they are rejoined, and if what
+remains is every sitting whole and in order the arrangement is dropped
+altogether — **deleting an insertion leaves the project as though it never
+happened.**
 
 ## meta.edn
 
@@ -337,10 +375,9 @@ cached, because the moment edits exist its contents depend on them.
 
 ## What is not built
 
-**Reordering pieces, and deleting from the middle.** The arrangement makes both
-straightforward — they are a `swap` and a `remove` on `:clips` — and neither is
-asked for, because a screencast is recorded roughly in order. Do not build them
-on spec.
+**Reordering pieces.** The arrangement makes it a `swap` on `:clips`, and it is
+not asked for, because a screencast is recorded roughly in order. Do not build
+it on spec.
 
 The two things that would actually help are a **filmstrip** in the video lane,
 which is `ffmpeg -i video.mp4 -vf fps=1/2,scale=160:-1`, and **multi-resolution

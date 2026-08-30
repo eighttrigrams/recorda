@@ -62,16 +62,16 @@
   project. The first one is its opening; every later one lands where `mode`
   says.
 
-  `mode` is `append` (the default — on the end), `at-playhead` (replaces
-  everything from `at` seconds onward) or `insert` (spliced in at `at`, keeping
-  what followed). `at` is a position on the assembly timeline.
+  `mode` is `append` (the default — on the end) or `at-playhead` (spliced in at
+  `at` seconds, keeping what followed). `at` is a position on the assembly
+  timeline. There is no mode for replacing from the playhead: trim and then
+  append already is that, in two calls that are each reversible on their own.
 
   **Nothing is rearranged until the sitting finishes.** The mode is written down
   and applied when the audio lands, so a take that fails or is cancelled leaves
-  the project exactly as it was — which is why replacing from the playhead is
-  one call and not a trim followed by a record.
+  the project exactly as it was, whatever it was going to do.
 
-  For `insert` the answer's `at` is the *snapped* position: a copy can only
+  For `at-playhead` the answer's `at` is the *snapped* position: a copy can only
   resume at a keyframe, so the cut lands on the nearest one and the caller is
   told where that is rather than being left to claim an accuracy the format
   does not have."
@@ -89,6 +89,19 @@
   [_req]
   (let [r (capture/stop!)]
     (if (:error r) (bad r) (ok r))))
+
+(defn abandon-handler
+  "POST /api/record/abandon — give up on a sitting and let the app record again.
+
+  The escape hatch for a take the browser can no longer finish: the picture is
+  captured on the server and the sound in the browser, so a tab that dies
+  between the two leaves a take nothing can complete. Without this the app waits
+  for audio forever and only a restart clears it.
+
+  Drops the sitting and removes its directory. Nothing already in the project is
+  touched — a pending sitting was never part of the assembly."
+  [_req]
+  (ok (capture/abandon!)))
 
 (defn list-handler
   "GET /api/recordings — every take, newest first."
@@ -176,14 +189,72 @@
   sittings, in the order they were recorded.
 
   Possible because editing only ever wrote an arrangement over the segments and
-  never touched a file. An inserted sitting is not lost by this — it goes back
-  to being the last one."
+  never touched a file. A sitting recorded into the middle is not lost by this —
+  it goes back to being the last one."
   [req]
   (let [id (get-in req [:params :id])]
     (if (nil? (store/read-meta id))
       {:status 404 :body {:error "no such project"}}
       (let [r (assemble/untrim! id)]
         (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn delete-clip-handler
+  "DELETE /api/recordings/:id/clips/:i — drop one piece from the arrangement.
+
+  `:i` indexes the pieces the project currently plays, which is what the lanes
+  draw between their seam marks.
+
+  Nothing is deleted from disk: the sitting behind the piece stays whole, and
+  this only stops it being played, so a wrong one costs an `undo edits`. If
+  taking the piece out leaves two halves of one sitting meeting end to start
+  they are rejoined, and if what remains is every sitting whole and in order the
+  arrangement is dropped entirely — deleting an insertion leaves the project as
+  though it had never happened."
+  [req]
+  (let [id (get-in req [:params :id])
+        i  (some-> (get-in req [:params :i]) parse-long)]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? i)                    (bad {:error "which piece?"})
+      :else (let [r (assemble/delete-clip! id i)]
+              (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn split-handler
+  "POST /api/recordings/:id/split — put a marker at `at` seconds, cutting one
+  piece into two.
+
+  Changes nothing about what plays. A marker is the handle an edit needs: put
+  two round something and the piece between them can be deleted, which is how
+  you cut from the middle.
+
+  The answer's `at` is where the marker actually went. A copy can only resume at
+  a keyframe, so it lands on the nearest one."
+  [req]
+  (let [id (get-in req [:params :id])
+        at (or (some-> (get-in req [:params "at"]) parse-double)
+               (some-> (get-in req [:body :at]) double))]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? at)                   (bad {:error "at (seconds) required"})
+      :else (let [r (assemble/split-at! id at)]
+              (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
+
+(defn delete-seam-handler
+  "DELETE /api/recordings/:id/seams/:i — remove a marker, so the two pieces
+  either side of it become one again.
+
+  Only a marker somebody put there can go. Two pieces of the same sitting
+  meeting end to start are continuous material with a mark drawn on it; two
+  different sittings meeting is the join itself, and refusing to remove that is
+  the honest answer rather than silently welding unrelated material together."
+  [req]
+  (let [id (get-in req [:params :id])
+        i  (some-> (get-in req [:params :i]) parse-long)]
+    (cond
+      (nil? (store/read-meta id)) {:status 404 :body {:error "no such project"}}
+      (nil? i)                    (bad {:error "which marker?"})
+      :else (let [r (assemble/delete-seam! id i)]
+              (if (:ok? r) (ok (store/read-meta id)) (bad r))))))
 
 (defn export-handler
   "POST /api/recordings/:id/export — mux the take's two tracks into one

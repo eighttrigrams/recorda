@@ -86,9 +86,11 @@
     (str m ":" (when (< sec 10) "0") sec "." (js/Math.floor (* 10 (mod t 1))))))
 
 (def modes
+  "Two, not three. Replacing from the playhead is Trim to playhead followed by
+   Append — two presses that are each reversible on their own — so a mode for it
+   would be a third way to do a thing that already has one."
   [[:append      "Append"      "New material goes on the end. The default, and what a screencast usually wants."]
-   [:at-playhead "At playhead" "Replace everything from the playhead onward. What was there stays on disk — undo brings it back."]
-   [:insert      "Insert"      "Splice in at the playhead and keep what followed. The cut lands on the nearest keyframe, within about 0.2 s."]])
+   [:at-playhead "At playhead" "Record into the middle: the new material goes in at the playhead and what followed is kept. The cut lands on the nearest keyframe, within about 0.2 s."]])
 
 (defn mode-picker
   "Where the next sitting lands.
@@ -109,10 +111,10 @@
         label])
      (when-not (= :append m)
        [:span.mode-at
-        ;; While a take runs this is the server's answer — for an insert that
-        ;; is the keyframe it will really cut at, which is not always the one
-        ;; that was asked for. Saying the requested time here would be a small
-        ;; lie the format cannot honour.
+        ;; While a take runs this is the server's answer — the keyframe it will
+        ;; really cut at, which is not always the one that was asked for. Saying
+        ;; the requested time here would be a small lie the format cannot
+        ;; honour.
         (if-let [landed (:record-at @state/app)]
           (str "at " (fmt-at landed))
           (str "at " (fmt-at (:time @state/app))))])]))
@@ -139,6 +141,16 @@
      (when proc?
        [:span.processing-note
         (if (:uploading? @state/app) "saving audio…" "finishing…")])
+     ;; The escape hatch. The picture is captured on the server and the sound
+     ;; here, so a tab that dies between the two leaves a take nothing can
+     ;; finish — and since waiting is not idle, nothing could be recorded again.
+     ;; Only shown once the wait has clearly stopped being the ordinary one.
+     (when (state/stuck?)
+       [:span.processing-note {:style {:color "var(--record)"}}
+        "no audio is coming for that take "
+        [:button.danger {:on-click #(state/abandon!)
+                         :title "Drop the unfinished sitting and record again. Nothing already in the project is touched."}
+         "give up"]])
      [:button.record-btn {:class    (str (when rec? "recording recording-now"))
                           :disabled (or proc? (and (not rec?) (or (not ready) (nil? project-id))))
                           :on-click #(if rec? (state/stop!) (state/start! project-id))}
@@ -149,6 +161,5 @@
       (cond rec?   "Stop"
             proc?  "Working"
             first? "Record"
-            (= :at-playhead mode) "Record over"
-            (= :insert mode)      "Record in"
+            (= :at-playhead mode) "Record here"
             :else  "Record more")]]))

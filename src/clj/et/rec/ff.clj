@@ -35,7 +35,7 @@
 (defn keyframes
   "Every keyframe time in a file's video stream, seconds, ascending.
 
-   **This is the list an insert has to obey.** A stream copy can *end* anywhere
+   **This is the list a cut in the middle has to obey.** A stream copy can *end* anywhere
    — the frames it keeps still have the frames they reference — but it can only
    *begin* at a keyframe, so any cut something has to resume from lands on one
    of these. The capture writes one roughly every 0.4 s.
