@@ -129,14 +129,20 @@
 (defn- start-music!
   "Schedule every music clip that is still to be heard from `pos` onward.
 
-   `pos` is where the playhead will be at `when`, not where it is now — the two
+   `pos` is where the playhead will be at `at-time`, not where it is now — the
    differ by the scheduling lead, and using the wrong one puts the music twenty
    milliseconds out from the voice.
 
    A clip already under way when playback starts is not skipped: it begins part
    of the way in, which is what makes seeking into the middle of a track sound
    like a seek and not like a track that failed to start."
-  [c when pos]
+  ;; `at-time`, never `when`. The voice's own scheduling below has called this
+  ;; instant `when` since the first version and got away with it, because
+  ;; nothing in that `let` body uses the macro. Here the body does, and a
+  ;; parameter named `when` shadows it — so `(when ...)` compiled to a call on a
+  ;; number, threw on the first press of Play, and took the whole rAF loop with
+  ;; it: no music, no video, and a playhead that never moved.
+  [c at-time pos]
   (reset! music-sources
           (vec (keep (fn [clip]
                        (when-let [b (get @music-buffers (:file clip))]
@@ -147,8 +153,8 @@
                                (set! (.-buffer src) b)
                                (.connect src @music-gain)
                                (if (>= at pos)
-                                 (.start src (+ when (- at pos)) 0)
-                                 (.start src when (- pos at)))
+                                 (.start src (+ at-time (- at pos)) 0)
+                                 (.start src at-time (- pos at)))
                                src)))))
                      @music-clips))))
 
@@ -166,15 +172,18 @@
         ;; play from the top when the playhead is already at the end, rather
         ;; than starting a node that ends immediately
         (do (swap! state assoc :offset 0.0) (play!))
-        (let [src  (.createBufferSource c)
-              when (+ (.-currentTime c) schedule-ahead)]
+        (let [src     (.createBufferSource c)
+              at-time (+ (.-currentTime c) schedule-ahead)]
           (set! (.-buffer src) b)
-          (.connect src @gain)
+          ;; Through the voice's own gain, not the master — otherwise the Voice
+          ;; slider moves a node nothing is connected to and the export is the
+          ;; only place it is heard.
+          (.connect src @voice-gain)
           (set! (.-onended src) (fn [] (pause!) (swap! state assoc :offset (duration))))
-          (.start src when pos)
+          (.start src at-time pos)
           (reset! source src)
-          (start-music! c when pos)
-          (swap! state assoc :playing? true :offset pos :started-at when))))))
+          (start-music! c at-time pos)
+          (swap! state assoc :playing? true :offset pos :started-at at-time))))))
 
 (defn- reschedule-music!
   "Put the music back in the right places without disturbing the voice.
