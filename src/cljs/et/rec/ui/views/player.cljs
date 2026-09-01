@@ -9,7 +9,8 @@
    can be bent by several percent with nothing visible, and it can be seeked
    outright at a cost of one frame. So every correction happens here, where it
    does no harm, and the sound plays exactly as recorded."
-  (:require [et.rec.ui.engine :as engine]
+  (:require [clojure.string :as str]
+            [et.rec.ui.engine :as engine]
             [et.rec.ui.state :as state]
             [et.rec.ui.views.recorder :as recorder]
             [et.rec.ui.waveform :refer [waveform]]
@@ -23,6 +24,11 @@
 ;; back on the project.
 (defonce ^:private crop-mode (r/atom false))
 (defonce ^:private crop-drag (r/atom nil))
+
+;; What is in the terms box right now, which is not what the project has until
+;; it is saved. Local for the same reason the crop drag is: a thing being
+;; typed is not yet a thing the project knows about.
+(defonce ^:private terms-draft (r/atom nil))
 
 ;; Bumped whenever the video's laid-out size could have changed. The overlay
 ;; reads the element's real geometry, and nothing else would make it re-render
@@ -638,6 +644,114 @@
                                    :width  (* (:w crop) inv)
                                    :height (* (:h crop) inv)}}])]))
 
+(defn- redact-overlay
+  "The boxes the scan found, outlined over the picture as the playhead crosses
+   them.
+
+   **This is the whole verification story**, and it is why scanning is a step
+   you press rather than something the export does on its way past. A redaction
+   you cannot look at before you send the file is one you are taking on trust,
+   and the export is exactly the wrong moment to discover that a term was never
+   found. Here they are drawn where they will be and when they will be, on the
+   footage itself.
+
+   Outlined rather than filled, so you can read what is underneath and judge
+   whether the box is over the right thing."
+  []
+  (let [_     @video-tick
+        t     (:time @state/app)
+        g     (video-geometry)
+        inv   (when g (/ 1 (:scale g)))
+        boxes (get-in @state/app [:redact :boxes])]
+    (when (and inv (seq boxes))
+      [:div.redact-layer
+       {:style {:left (:left g) :top (:top g) :width (:w g) :height (:h g)}}
+       (for [[i b] (map-indexed vector boxes)
+             :when (and (>= t (:t0 b)) (<= t (:t1 b)))]
+         ^{:key i}
+         [:div.redact-box {:style {:left   (* (:x b) inv)
+                                   :top    (* (:y b) inv)
+                                   :width  (* (:w b) inv)
+                                   :height (* (:h b) inv)}
+                           :title  (:term b)}])])))
+
+(defn- redact-status
+  "One line saying whether what is on screen can be trusted.
+
+   The stale case is the one that matters, and it is written to read like a job
+   rather than a note: a scan made before the terms or the edit changed
+   describes a video that no longer exists, and the export refuses to use it."
+  [r]
+  (let [p (:progress r)
+        n (count (:boxes r))]
+    (cond
+      (= "scanning" (:state p))
+      [:span.scanning "Scanning… " (:done p) " / " (:total p) " frames"]
+
+      (empty? (:terms r)) nil
+
+      (not (:current? r))
+      [:span.stale "not scanned yet, or out of date — press Scan"]
+
+      (zero? n)
+      [:span.stale "scanned " (:frames r) " frames and found nothing — check the spelling"]
+
+      :else
+      [:span.done n (if (= 1 n) " place" " places") " found in " (:frames r) " frames"])))
+
+(defn- redact-panel
+  "Type what should not leave the machine, press Scan, watch the boxes.
+
+   Saving and scanning are two buttons on purpose. Saving a term is instant and
+   changes only what the project wants. Scanning is an OCR over every sampled
+   frame and takes minutes, and a text box that set that going on each
+   keystroke would be unusable."
+  [take]
+  (let [id    (:id take)
+        r     (:redact @state/app)
+        saved (str/join "\n" (:terms r))
+        draft (or @terms-draft saved)
+        dirty (not= (str/trim draft) (str/trim saved))]
+    [:div.redact
+     [:div.redact-head
+      [:b "Blur out"]
+      [:span.hint "one per line — found by reading the frames, blurred on export"]
+      [:div.spacer]
+      [redact-status r]]
+     [:textarea.redact-terms
+      {:value       draft
+       :rows        (max 2 (min 8 (inc (count (:terms r)))))
+       :spell-check false
+       :placeholder "dan@eighttrigrams.net"
+       :on-change   #(reset! terms-draft (.. % -target -value))}]
+     [:div.redact-actions
+      [:button {:disabled (not dirty)
+                :on-click (fn [_]
+                            (state/set-redact-terms!
+                              id
+                              (->> (str/split-lines draft)
+                                   (map str/trim)
+                                   (remove empty?)
+                                   vec)
+                              :blur)
+                            (reset! terms-draft nil))}
+       "Save terms"]
+      ;; Not the record red. `base.css` reserves that for the machine actually
+      ;; recording, and a button that wants pressing is not that.
+      [:button {:class    (when (and (seq (:terms r)) (not (:current? r))) "needs-scan")
+                :disabled (or dirty
+                              (empty? (:terms r))
+                              (state/busy?)
+                              (state/redact-scanning?))
+                :on-click (fn [_] (state/scan-redact! id))
+                :title    "Read every sampled frame and write down where the terms are. Minutes, not seconds."}
+       (if (state/redact-scanning?) "Scanning…" "Scan")]
+      [:span.hint
+       (cond
+         dirty            "save the terms first"
+         (seq (:boxes r)) "the boxes are drawn on the picture as the playhead reaches them"
+         :else            "only export.mp4 is blurred — the take on disk keeps every pixel")]]]))
+
 (defn player
   "The project pane: what this video is, and everything you do to it.
 
@@ -678,7 +792,8 @@
                       :preload "auto"
                       :on-loaded-metadata (fn [_] (swap! video-tick inc))
                       :on-click (fn [_] (when-not @crop-mode (toggle!)))}]
-             [crop-overlay take]]
+             [crop-overlay take]
+             [redact-overlay]]
             [:div.transport
              [:button {:on-click (fn [_] (toggle!)) :disabled (not ready?)}
               (cond (:loading? estate) "Decoding…"
@@ -704,6 +819,7 @@
              [:button {:on-click (fn [_] (state/export! id))
                        :disabled (:exporting? @state/app)}
               (if (:exporting? @state/app) "Exporting…" "Export mp4")]]
+            [redact-panel take]
             [levels take]
             [lanes take]
             [:div.meta-line

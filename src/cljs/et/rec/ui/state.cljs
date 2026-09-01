@@ -62,6 +62,9 @@
                      (or (:fx-gain take) 1.0))
   (engine/set-music! (:id take) (:music take)))
 
+;; Defined further down with the rest of the redaction calls; needed here.
+(declare fetch-redact!)
+
 (defn select! [id]
   (let [take (first (filter (fn [r] (= id (:id r))) (:recordings @app)))]
     (swap! app assoc :selected id :time 0.0 :playing? false
@@ -70,7 +73,8 @@
     ;; stall.
     (engine/load! id (version take))
     (sync-music! take)
-    (fetch-peaks! id)))
+    (fetch-peaks! id)
+    (fetch-redact! id)))
 
 (defn- refresh-take!
   "Take the server's answer as the project and put the music lane in step with
@@ -347,6 +351,41 @@
   (api/PUT (str "/api/recordings/" id) {:title title}
            (fn [_] (fetch-recordings!))))
 
+;; --- blurring things out ---------------------------------------------------
+;;
+;; Two separate things, deliberately kept apart. The **terms** are what you
+;; want gone, and saving them is instant. The **scan** is where they turned out
+;; to be, and it costs minutes because it is an OCR over every sampled frame.
+;;
+;; A scan belongs to the terms and the assembly it was made from. Change either
+;; and it is stale — the page says so and the export refuses, rather than
+;; quietly using boxes drawn against a video that no longer exists.
+
+(defn fetch-redact! [id]
+  (api/GET (str "/api/recordings/" id "/redact")
+           #(when (= id (:selected @app)) (swap! app assoc :redact %))))
+
+(defn redact-scanning? []
+  (= "scanning" (get-in @app [:redact :progress :state])))
+
+(defn set-redact-terms!
+  "Write down what should be blurred out. Does not scan — that is the slow half
+   and it is asked for separately, because typing a term and having the machine
+   disappear for three minutes is not what typing a term should do."
+  [id terms style]
+  (api/PUT (str "/api/recordings/" id "/redact")
+           {:terms terms :style (name (or style :blur))}
+           (fn [_] (fetch-redact! id) (fetch-recordings!))
+           #(swap! app assoc :error "could not save the terms")))
+
+(defn scan-redact!
+  "Go and look. Answers at once; the page polls for how far it has got."
+  [id]
+  (swap! app assoc :error nil)
+  (api/POST (str "/api/recordings/" id "/redact/scan")
+            (fn [_] (swap! app assoc-in [:redact :progress] {:state "scanning" :done 0 :total 1}))
+            #(swap! app assoc :error (or (get-in % [:response :error]) "could not start the scan"))))
+
 (defn set-crop!
   "The area of the video to keep, in the video's own pixels. Applied on export,
    so this can be redrawn at any time and costs nothing until you export."
@@ -390,6 +429,17 @@
 
 (defonce ^:private poller (atom nil))
 
+(defn- poll!
+  "The status, always, and a running scan's progress while there is one.
+
+   Piggybacked on the same second rather than given an interval of its own:
+   two timers polling the same server for two halves of the same page is one
+   more thing to start, stop and get out of step."
+  []
+  (fetch-status!)
+  (when (and (:selected @app) (redact-scanning?))
+    (fetch-redact! (:selected @app))))
+
 (defn start-polling! []
   (when-not @poller
-    (reset! poller (js/setInterval fetch-status! 1000))))
+    (reset! poller (js/setInterval poll! 1000))))

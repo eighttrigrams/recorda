@@ -379,3 +379,62 @@ body { max-width: 1600px; }
 }
 .lane-fx .music-clip:hover { background: color-mix(in srgb, var(--record) 38%, transparent); }
 .lane-fx .music-clip:hover .music-grip { border-right-color: var(--record); }
+
+/* --- blurring things out of the export ------------------------------------
+
+   An export setting like the crop above, and drawn over the picture for the
+   same reason: what you are deciding about is the footage you actually
+   recorded. The difference is that the crop is a box you draw and this is a
+   box something else found, which is why it can be looked at and the crop
+   does not need to be — the whole point of showing them is that you can check
+   the machine was right before you hand the file to anybody. */
+
+.redact-layer { position: absolute; pointer-events: none; }
+.redact-box {
+  position: absolute;
+  /* Outlined, never filled. Filling it would hide exactly the thing you
+     opened the panel to check. */
+  border: 1.5px solid var(--accent);
+  background: rgba(79, 70, 229, 0.12);
+  border-radius: 2px;
+}
+
+.redact {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+.redact-head { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+.redact-head .spacer { flex: 1 1 auto; }
+.redact .hint { color: var(--muted-text); font-size: 12px; }
+.redact-terms {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 7px 9px;
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  background: #fff;
+  resize: vertical;
+}
+.redact-actions { display: flex; align-items: center; gap: 9px; margin-top: 8px; }
+.redact-actions button { padding: 5px 12px; font-size: 13px; }
+.redact-actions button:disabled { opacity: 0.45; cursor: default; }
+/* There is work outstanding. Ringed rather than reddened: red in this app
+   means the machine is recording, and a button asking to be pressed is not
+   that. */
+.redact-actions button.needs-scan:not(:disabled) {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Three states worth telling apart at a glance, and only one of them is
+   quiet. Stale is the dangerous one — a scan that no longer describes the
+   video — so it wears the record colour, the same one the app uses everywhere
+   else for "this is about to matter". */
+.redact-head .done     { color: var(--text-secondary); font-size: 12px; }
+.redact-head .scanning { color: var(--accent); font-size: 12px; }
+.redact-head .stale    { color: var(--record); font-size: 12px; font-weight: 500; }
