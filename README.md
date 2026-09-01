@@ -145,6 +145,7 @@ recordings/2026-08-30-0052-05/
   peaks.json               what the waveform lane draws
   music/                   imported background tracks, stored as they arrived
   meta.edn                 the sitting list, the arrangement, everything else
+  redact.edn               where the terms were found — only after you scan
   export.mp4               only after you export
 ```
 
@@ -431,6 +432,125 @@ Both dimensions are forced even. h264 in 4:2:0 stores chroma at half resolution
 in each direction, so an odd width has no valid chroma plane — the encoder
 either refuses or silently rounds, and silently is worse.
 
+## Blurring things out
+
+**Blur out** is a box you type terms into — an address, a key, a client's name.
+Press **Scan** and recorda reads every sampled frame, finds where those terms
+are, and blurs them in the export.
+
+It is an export setting, like the crop above, and for the same reason: it stays
+a list of terms and a list of boxes rather than something done to the footage,
+so it can be added to, redrawn and undone a week later.
+
+The corollary is the one thing about this that can bite. **Only `export.mp4` is
+redacted.** `video.mp4` and the segments behind it still hold every pixel that
+was recorded — which is exactly what makes it reversible, and it means the file
+you hand somebody is the export and never the take.
+
+### A search, not a judgement
+
+The terms are known strings, typed in by the person who wants them gone. So
+this is not a recognition problem, it is a search — and a search should be
+repeatable, inspectable, and the same on Tuesday as it was on Monday. A vision
+model asked to find the secrets in a screenshot answers differently each time
+and cannot tell you where on the frame it looked. What is wanted here is a box
+with coordinates.
+
+So it is an OCR. **Vision**, and not the `tesseract` this workspace already has
+for `rhizome-books`, measured on a real 2560x1440 frame of a screencast:
+
+    Vision      0.24 s/frame    253 words
+    tesseract   0.67 s/frame    171 words
+
+Both numbers point the same way, and a third one decides it. The frame had
+`dan@eighttrigrams.net` on it twice, once in 12px grey; tesseract read that one
+as `dang@eighttrigrams.net`. **A redaction matching against a misread is a
+redaction that does not happen.** Tesseract was built for scans of paper and
+Vision has spent its life on screenshots, and this app only ever looks at
+screenshots.
+
+Being macOS-only costs nothing that was not already spent — AVFoundation for
+the screen, CoreAudio for the interface, Vision for this. The helper is
+`scripts/ocr.swift`, compiled on demand into `target/` rather than committed:
+a binary in the repo is a thing to license, to keep and to explain, and this
+one builds in under two seconds.
+
+### Over-blur is cheap, under-blur is the whole failure
+
+Every judgement here leans the same way. A redaction that misses one frame in
+nine hundred is not 99.9% of a redaction; it is a leak, and it is a leak nobody
+will find, because nobody watches their own export frame by frame.
+
+- **Matching is approximate** — one edit allowed per seven characters of the
+  term, and none at all below seven, because a four-letter term with an edit to
+  spare matches half the screen. That is what covers `dang@eighttrigrams.net`.
+- **The box is whole words.** Ask for `eighttrigrams` and the whole of
+  `dan@eighttrigrams.net` goes. More than was asked for, and more is the side
+  to be wrong on — it also spares this from trusting a character-level box on a
+  proportional font.
+- **The box is padded**, by a fraction of the text's own height. A blur that
+  hugs the ink leaves the ascenders and the shape of the word, which for
+  something like an address is most of what you were hiding.
+- **The box is held** for 0.4 s either side of the frames it was seen in. At
+  two frames a second there is half a second nobody looked at around every hit,
+  and a term scrolling into view is on screen for some of it.
+
+A term that sits still is **one box** for as long as it is there, not one per
+sample. A term that jumps elsewhere opens a second box rather than stretching
+the first, because a rectangle covering both would blur everything between
+them. Two guards decide which: the boxes must overlap and their union must not
+be much bigger than what went into it, and the gap in time must be at most one
+missed sample.
+
+### Scanning is a step you press
+
+Roughly **0.28× real time** — a ten minute take is about three minutes. Of a
+31.465 s take, measured: 1.3 s to write the frames, 7.3 s of OCR, 0.08 s of
+matching.
+
+Three OCR processes, not one per core. Vision threads inside itself and one
+process already runs at about 140% CPU, so past a point they compete for the
+same units: 63 frames took 15.1 s in one process and 9.7 s in four. The third
+is where the curve flattens.
+
+It is a separate press rather than something the export does on its way past,
+and that is the point rather than a concession to the cost. **The boxes are
+drawn over the picture as the playhead reaches them** — outlined, not filled,
+so you can read what is underneath and judge whether the box is over the right
+thing. A redaction you cannot look at before you send the file is one you are
+taking on trust, and the export is the wrong moment to find out that a term was
+never found.
+
+A scan belongs to the terms, the sample rate and the assembly it was made from.
+Change any of them and it is stale, the panel says so, and **the export refuses
+rather than using it**. Boxes drawn against a video that no longer exists would
+produce a file blurred in the wrong places that looks exactly like one that is
+not.
+
+Common words cost boxes. Four terms on a real take, two of them the words
+`Containers` and `Images` in a Docker window, produced 21 — every place they
+appeared and every time the window moved. Past 300 the export stops and says
+so; dropping the ones past a limit is the one behaviour this must never have.
+
+### Measured
+
+On a take with `dan@eighttrigrams.net` visible for the last twelve seconds,
+scanned for `eighttrigrams.net` and exported, then read back with the same OCR:
+
+    source     46 occurrences across 63 sampled frames
+    export      0
+
+The words around it — `Removed … from the subscriber list` — come back
+untouched. The export re-encodes, as a crop does, and took 7.8 s for a 31 s
+take.
+
+### What it cannot do
+
+It reads text. A term rendered as a picture, handwritten, or half scrolled off
+an edge is not text and will not be found. Neither is a face, a window title,
+or anything else you did not name. **This narrows a problem; it does not close
+one**, and what closes it is watching the export before you send it.
+
 ## Export
 
 `Export mp4` in the player mixes the two tracks back into one file and hands it
@@ -438,7 +558,8 @@ to the browser's downloads, named after the take.
 
 The video is **stream-copied** — its frames came off the hardware encoder during
 the capture and are already h264 in an mp4, so a twenty minute export is a few
-seconds of work and costs no quality. Only the audio is encoded, to AAC at
+seconds of work and costs no quality. A crop or a redaction is what ends that,
+and only then: both have to touch pixels, so both re-encode. Only the audio is encoded, to AAC at
 192k, which is transparent for a mono voice track and is what makes the result
 a file other things will open. `audio.wav` stays lossless and is what an edit,
 or a trip through a DAW, should start from.
