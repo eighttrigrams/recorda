@@ -10,12 +10,15 @@
    Editing does *not* land here, in the end. Cuts and splices live in the
    project's `:clips` and are resolved by et.rec.assemble, so that what you play
    is exactly what you export — an edit visible only in the export would be an
-   edit you could not review. What is left for this step is the crop, which is
-   genuinely an output setting: it changes the frame you hand out and not the
-   footage you keep."
+   edit you could not review. What is left for this step are the two genuine
+   output settings: the crop, which changes the frame you hand out and not the
+   footage you keep, and the redaction, which blurs named things out of it. Both
+   are numbers over the recording rather than anything done to it, which is what
+   makes either changeable a week later."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [et.rec.ff :as ff]
+            [et.rec.redact :as redact]
             [et.rec.store :as store]))
 
 (defn normalise-crop
@@ -39,27 +42,27 @@
    audio.wav, which is what an edit or a trip through a DAW should start from."
   "192k")
 
-(defn- crop-args
-  "Cropping is done **here**, on the way out, not during capture.
+(defn- video-bitrate
+  "What to spend on a re-encoded picture, in kbps.
 
-   Capture-time cropping would be free — the frames are being encoded anyway —
-   and that is exactly why it is wrong. It bakes the decision into the recording
-   before a single frame has been seen, and it cannot be changed afterwards. As
-   an export setting the box stays a number you can redraw at any time, against
-   the footage itself, which is the same reason a trim is a number rather than a
-   deletion.
+   Cropping and redacting are both done **here**, on the way out, not during
+   capture. Doing either during capture would be free — the frames are being
+   encoded anyway — and that is exactly why it is wrong. It bakes the decision
+   into the recording before a single frame has been seen, and it cannot be
+   changed afterwards. As export settings they stay numbers you can redraw at
+   any time, against the footage itself, which is the same reason a trim is a
+   number rather than a deletion.
 
-   The price is a re-encode of the video, paid only when a crop is set. The
-   bitrate is scaled by how much of the frame survives, so cropping to a corner
+   The price is a re-encode, paid only when one of them is set. The budget is
+   scaled by how much of the frame survives the crop, so cropping to a corner
    of the screen does not spend a full-screen budget on a quarter of the
-   pixels."
-  [crop src-w src-h base-bitrate]
-  (when crop
-    (let [ratio (/ (double (* (:w crop) (:h crop)))
+   pixels. A redaction keeps the whole frame, and so keeps the whole budget."
+  [crop src-w src-h base]
+  (let [ratio (if crop
+                (/ (double (* (:w crop) (:h crop)))
                    (double (max 1 (* src-w src-h))))
-          kbps  (max 800 (long (* base-bitrate ratio)))]
-      ["-vf" (format "crop=%d:%d:%d:%d" (:w crop) (:h crop) (:x crop) (:y crop))
-       "-c:v" "h264_videotoolbox" "-b:v" (str kbps "k")])))
+                1.0)]
+    (max 800 (long (* base ratio)))))
 
 (defn- audio-graph
   "The inputs and the filter that turn the voice and the music into one track.
@@ -130,26 +133,43 @@
       (not (.exists audio)) {:ok? false :error "this take has no audio"}
       :else
       (let [crop  (:crop meta)
-            sw    (or (some-> (ff/probe video "v:0" "stream=width") parse-long) 1)
-            sh    (or (some-> (ff/probe video "v:0" "stream=height") parse-long) 1)
-            ca    (crop-args crop sw sh 6000)
-            ag    (audio-graph meta audio)
-            res (ff/exec! (concat
-                            ["-i" (str video) "-i" (str audio)]
-                            (:inputs ag)
-                            (if ag
-                              ["-filter_complex" (:filter ag) "-map" "0:v" "-map" "[aout]"]
-                              ["-map" "0:v" "-map" "1:a"])
-                            (or ca ["-c:v" "copy"])
-                            ["-c:a" "aac" "-b:a" audio-bitrate
-                             ;; The two tracks are written to the same length,
-                             ;; so this only ever matters if something upstream
-                             ;; went wrong — in which case stopping at the
-                             ;; shorter one beats a tail of silence or a frozen
-                             ;; frame.
-                             "-shortest"
-                             "-movflags" "+faststart"
-                             (str out)]))]
-        (if (:ok? res)
-          {:ok? true :bytes (.length out) :duration (ff/duration out)}
-          {:ok? false :error (:log res)})))))
+            red   (redact/for-export id meta crop)]
+        (if-not (:ok? red)
+          ;; A stale or unscanned redaction stops the export instead of being
+          ;; ignored. Handing back a file that is *not* blurred where the
+          ;; project says it should be is the one failure this must never have,
+          ;; and it is the one failure that would look like success.
+          red
+          (let [sw  (or (some-> (ff/probe video "v:0" "stream=width") parse-long) 1)
+                sh  (or (some-> (ff/probe video "v:0" "stream=height") parse-long) 1)
+                vc  (:filter red)
+                ag  (audio-graph meta audio)
+                ;; Both halves of the graph go in one -filter_complex. The
+                ;; video half is absent whenever nothing is being done to the
+                ;; picture, and that absence is what keeps the ordinary export
+                ;; a stream copy.
+                fc  (str/join ";" (remove nil? [(:filter ag) vc]))
+                res (ff/exec!
+                      (concat
+                        ["-i" (str video) "-i" (str audio)]
+                        (:inputs ag)
+                        (when (seq fc) ["-filter_complex" fc])
+                        ["-map" (if vc "[vout]" "0:v")
+                         "-map" (if ag "[aout]" "1:a")]
+                        (if vc
+                          ["-c:v" "h264_videotoolbox"
+                           "-b:v" (str (video-bitrate crop sw sh 6000) "k")]
+                          ["-c:v" "copy"])
+                        ["-c:a" "aac" "-b:a" audio-bitrate
+                         ;; The two tracks are written to the same length,
+                         ;; so this only ever matters if something upstream
+                         ;; went wrong — in which case stopping at the
+                         ;; shorter one beats a tail of silence or a frozen
+                         ;; frame.
+                         "-shortest"
+                         "-movflags" "+faststart"
+                         (str out)]))]
+            (if (:ok? res)
+              {:ok? true :bytes (.length out) :duration (ff/duration out)
+               :redacted (:boxes red)}
+              {:ok? false :error (:log res)})))))))

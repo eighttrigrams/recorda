@@ -6,6 +6,7 @@
    list. It is prose doing double duty, so the first line of a docstring here
    is not free-form."
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [et.rec.capture :as capture]
             [et.rec.config :as config]
             [et.rec.devices :as devices]
@@ -14,6 +15,7 @@
             [et.rec.ff :as ff]
             [et.rec.media :as media]
             [et.rec.music :as music]
+            [et.rec.redact :as redact]
             [et.rec.split :as split]
             [et.rec.store :as store]))
 
@@ -397,6 +399,82 @@
           (let [c (export/normalise-crop body vw vh)]
             (store/update-meta! id assoc :crop c)
             (ok (store/read-meta id))))))))
+
+(defn set-redact-handler
+  "PUT /api/recordings/:id/redact — the terms to blur out of the export, as
+  `{:terms [\"…\"] :style \"blur\"|\"box\" :fps 2}`. An empty list clears it.
+
+  Only the intent is stored here. Where the terms actually are on the screen is
+  a question about frames, and it is not asked until you scan — which is why
+  changing this list makes any existing scan stale rather than wrong."
+  [req]
+  (let [id    (get-in req [:params :id])
+        body  (:body req)
+        terms (into [] (comp (map str) (map str/trim) (remove empty?))
+                    (or (:terms body) []))]
+    (if (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such project"}}
+      (do
+        (if (empty? terms)
+          (store/update-meta! id dissoc :redact)
+          (store/update-meta! id assoc :redact
+                              (cond-> {:terms terms}
+                                (:style body) (assoc :style (keyword (:style body)))
+                                (:fps body)   (assoc :fps (double (:fps body))))))
+        (ok (store/read-meta id))))))
+
+(defn redact-handler
+  "GET /api/recordings/:id/redact — the terms, the boxes the last scan found,
+  and whether that scan still describes this project.
+
+  The boxes are here so the page can draw them over the picture. **That is the
+  point of the whole endpoint**: a redaction you cannot see before you export
+  is one you are taking on trust, and the only honest way to trust it is to
+  watch the playhead cross each box."
+  [req]
+  (let [id (get-in req [:params :id])
+        m  (store/read-meta id)]
+    (if (nil? m)
+      {:status 404 :body {:error "no such project"}}
+      (let [h (redact/read-hits id)]
+        (ok {:terms    (vec (:terms (redact/settings m)))
+             :style    (name (:style (redact/settings m)))
+             :fps      (:fps (redact/settings m))
+             :current? (redact/current? id)
+             :scanned  (:at h)
+             :frames   (:frames h)
+             :boxes    (vec (:boxes h))
+             ;; Only this project's. The scanner is one at a time and its
+             ;; progress is one atom, so without this the page for a project
+             ;; nobody has scanned would report the last one that was.
+             :progress (let [p @redact/progress]
+                         (if (= id (:id p)) p {:state "idle"}))})))))
+
+(defn scan-redact-handler
+  "POST /api/recordings/:id/redact/scan — look through the video for the terms
+  and write down where they are.
+
+  Answers at once and runs behind; poll GET …/redact for how far it has got.
+  Roughly half of real time — a ten minute take is about three minutes.
+
+  Refused while a take is running. The scan saturates the machine and a capture
+  is the one thing here with a deadline."
+  [req]
+  (let [id (get-in req [:params :id])]
+    (cond
+      (nil? (store/read-meta id))
+      {:status 404 :body {:error "no such project"}}
+
+      (not= :idle (:status (capture/status)))
+      (bad {:error "not while a take is running"})
+
+      (= :scanning (:state @redact/progress))
+      (bad {:error "a scan is already running"})
+
+      :else
+      (do (reset! redact/progress {:state :scanning :id id :done 0 :total 1 :hits 0})
+          (future (redact/scan! id))
+          {:status 202 :body {:started id}}))))
 
 (defn media-handler
   "GET /media/:id/:name — a take's own files, with Range support so the video
