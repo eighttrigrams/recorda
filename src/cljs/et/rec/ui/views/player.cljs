@@ -38,6 +38,95 @@
 (defonce ^:private _resize
   (.addEventListener js/window "resize" #(swap! video-tick inc)))
 
+;; --- how much of the timeline fits across the lanes ------------------------
+;;
+;; Zoom does not make the lanes bigger on the page — it makes the width they
+;; already have cover less time, and scrolls to the rest. The point is
+;; precision, not size: a marker lands on the pixel you clicked, so a pixel
+;; worth twenty milliseconds instead of a quarter of a second is the difference
+;; between putting a cut where you meant it and putting it near there.
+
+(def ^:private label-w
+  "The lane labels' column, in pixels. Everything on the timeline is measured
+   from its right edge — the playhead, the seams, the zoomed width — so the
+   number is written once here rather than four times over. It matches
+   `.lane-label` in the stylesheet, which is the one copy it cannot read."
+  58)
+
+(def ^:private max-zoom
+  "Sixteen times, and no further, because the waveform is drawn from 8000 peaks
+   for the whole take however long it is. Past this a lane is spreading one
+   peak over several pixels, and the extra room buys nothing to look at.
+   Finer than this wants finer peaks, which is a question for the server."
+  16.0)
+
+(defonce ^:private zoom (r/atom 1.0))
+(defonce ^:private lanes-scroll-el (atom nil))
+
+(defn- lanes-width
+  "How wide the lanes' content is at zoom `z`, given the width on the page.
+
+   The same arithmetic as the stylesheet's `calc(58px + (100% - 58px) * z)`,
+   and that is the whole reason it is worth a function: a position computed
+   here has to land where the DOM is about to put it."
+  [view z]
+  (+ label-w (* (- view label-w) z)))
+
+(defn- set-zoom!
+  "Zoom about a fixed point rather than about the left edge.
+
+   Zooming is always zooming *toward* something — what is under the playhead,
+   or failing that whatever is in the middle of the view. Left alone the
+   scroller keeps its scrollLeft, which means the instant you zoom in, the part
+   you were looking at leaves the screen and you have to go and find it."
+  [z]
+  (let [z  (max 1.0 (min max-zoom z))
+        el @lanes-scroll-el]
+    (if-not el
+      (reset! zoom z)
+      (let [view (.-clientWidth el)
+            left (.-scrollLeft el)
+            old  (lanes-width view @zoom)
+            dur  (engine/duration)
+            head (if (pos? dur) (/ (engine/position) dur) 0)
+            px   (+ label-w (* (- old label-w) head))
+            on   (- px left)
+            ;; What to hold still: the playhead if it is on screen, and the
+            ;; middle of what is shown if it is not — zooming toward a playhead
+            ;; you were not looking at is as disorienting as not zooming toward
+            ;; anything.
+            [held screen] (if (and (>= on label-w) (<= on view))
+                            [head on]
+                            (let [mid (+ left (/ view 2))]
+                              [(/ (- mid label-w) (max 1 (- old label-w)))
+                               (/ view 2)]))
+            px'  (+ label-w (* (- (lanes-width view z) label-w) held))]
+        (reset! zoom z)
+        ;; After the render: until the lane is actually wider, the scrollLeft
+        ;; being asked for is clamped against the width it is replacing.
+        (r/after-render #(set! (.-scrollLeft el) (max 0 (- px' screen))))))))
+
+(defn- follow!
+  "Keep the playhead on screen while the clock is running.
+
+   **Only** while it is running. Parked, the scroll position belongs to
+   whoever is looking — a view that snapped back to the playhead every frame
+   could not be scrolled away from at all.
+
+   `frac` comes in rather than being read off the element because the caller
+   has just written it, and reading it back costs a layout."
+  [frac]
+  (when (and (> @zoom 1.0) (engine/running?))
+    (when-let [el @lanes-scroll-el]
+      (let [view (.-clientWidth el)
+            px   (+ label-w (* (- (lanes-width view @zoom) label-w) frac))
+            left (.-scrollLeft el)]
+        ;; A band rather than an edge, and re-centred rather than nudged: one
+        ;; jump every half screen is far less main-thread work than a scroll on
+        ;; every frame, and main-thread work is what the audio clock pays for.
+        (when (or (< px (+ left label-w 24)) (> px (+ left view -24)))
+          (set! (.-scrollLeft el) (max 0 (- px (/ view 2)))))))))
+
 (def ^:private video-deadband
   "Video drift below this is left alone. The eye does not find a screencast's
    pointer forty milliseconds early."
@@ -58,8 +147,10 @@
         dur (engine/duration)]
     (when-let [ph @playhead-el]
       (when (pos? dur)
-        (set! (.. ph -style -left)
-              (str "calc(58px + (100% - 58px) * " (/ pos dur) ")"))))
+        (let [frac (/ pos dur)]
+          (set! (.. ph -style -left)
+                (str "calc(" label-w "px + (100% - " label-w "px) * " frac ")"))
+          (follow! frac))))
     (when v
       ;; `running?`, not `playing?` — the picture must not move until the audio
       ;; clock does. See the engine's docstring for what happens when it does.
@@ -329,11 +420,36 @@
               :on-key-up   commit}]
      [:span.gain-read (str (js/Math.round (* 100 v)) "%")]]))
 
+(defn- zoom-slider
+  "How closely the lanes are being looked at. Nothing about the project — which
+   is why, unlike the levels beside it, it is not written down anywhere.
+
+   The slider moves in octaves rather than in steps of one. 1× to 4× is the
+   half of it that gets used, and it is half the travel here; laid out linearly
+   to sixteen it would be the first fifth, with the rest of the slider spent on
+   distinctions nobody makes."
+  []
+  (let [z @zoom]
+    [:label.gain.zoom
+     {:class (when (<= z 1.0) "unity")
+      :title (str "Spread the lanes out and scroll them. A cut lands on the "
+                  "pixel you clicked, so a wider lane is a finer cut.")}
+     [:span.gain-label "Zoom"]
+     [:input {:type "range" :min 0 :max (js/Math.log2 max-zoom) :step 0.01
+              :value (js/Math.log2 z)
+              :on-change #(set-zoom! (js/Math.pow 2 (js/parseFloat (.. % -target -value))))}]
+     [:span.gain-read (str (/ (js/Math.round (* 10 z)) 10) "\u00d7")]]))
+
 (defn- levels [take]
   [:div.levels
    [gain-slider take :voice "Voice"]
    [gain-slider take :music "Music"]
-   [gain-slider take :fx    "FX"]])
+   [gain-slider take :fx    "FX"]
+   ;; Not a level at all, but it belongs to the lanes underneath and this is
+   ;; the row that sits over them. Pushed to the far end so it does not read as
+   ;; a fourth thing to balance.
+   [:div.spacer]
+   [zoom-slider]])
 
 ;; --- the imported lanes ----------------------------------------------------
 ;;
@@ -506,50 +622,64 @@
         ;; when the next press is not a plain append it says so rather than
         ;; leaving the mode picker to carry that on its own.
         armed (not= :append (or (:record-mode @state/app) :append))]
-    [:div.lanes
-     [:div.lane.lane-video
-      [:div.lane-label "Video"]
-      ;; Double-click marks a split. It is the counterpart of right-click:
-      ;; one makes a handle, the other uses it. Both live on the lane because
-      ;; the lane is where the timeline is.
-      [:div.lane-body {:on-click seek-from-event
-                       :on-double-click #(split-here! take %)
-                       :on-context-menu #(open-piece-menu! take %)}
-       [:div.video-strip]
-       [piece-highlight take]]]
-     [:div.lane.lane-audio
-      [:div.lane-label "Audio"]
-      [:div.lane-body {:on-click seek-from-event
-                       :on-double-click #(split-here! take %)
-                       :on-context-menu #(open-piece-menu! take %)}
-       (if peaks
-         ;; Drawn at the voice level, so the slider above shows its effect
-         ;; here rather than only in the exported file.
-         [waveform (:peaks peaks) (double (or (:voice-gain take) 1.0))]
-         [:div.empty {:style {:padding "8px"}} "reading waveform…"])
-       [piece-highlight take]]]
-     [audio-lane take dur :music "Music" "drop an audio file here, or press +"]
-     [audio-lane take dur :fx    "FX"    "drop an effect here, or press +"]
-     ;; Positioned exactly the way the playhead is, so a seam and the playhead
-     ;; sitting on the same instant land on the same pixel.
-     (when (pos? dur)
-       (for [{:keys [i at added?]} (seams take)]
-         ^{:key (str i "-" at)}
-         [:div.seam {:class (when added? "added")
-                     :style {:left (str "calc(58px + (100% - 58px) * " (/ at dur) ")")}}
-          ;; The head is the only part that takes a pointer — the line itself
-          ;; stays out of the way so it never intercepts a click meant for the
-          ;; lane underneath it.
-          [:div.seam-head
-           {:title (str (if added? "marker" "join") " at " (fmt at)
-                        " — right-click"
-                        (when-not added? " (a join cannot be removed)"))
-            :on-context-menu #(open-seam-menu! take {:i i :at at :added? added?} %)
-            :on-click #(.stopPropagation %)
-            :on-double-click #(.stopPropagation %)}]]))
-     [:div.playhead {:ref   #(reset! playhead-el %)
-                     :class (when armed "armed")
-                     :style {:left "58px"}}]
+    ;; `zoomed` is what turns the label column into something that holds its
+    ;; place — see the stylesheet. At rest there is nothing to scroll and
+    ;; nothing to hold, and the lanes are left exactly as they were.
+    [:div.lanes {:class (when (> @zoom 1.0) "zoomed")}
+     ;; The timeline lives in a scroller and everything on it is positioned in
+     ;; percentages of the inner box, so zooming is one width and nothing else
+     ;; here has to know about it. The lanes keep their place on the page: it
+     ;; is the time they cover that shrinks.
+     [:div.lanes-scroll {:ref #(reset! lanes-scroll-el %)}
+      [:div.lanes-inner
+       {:style {:width (str "calc(" label-w "px + (100% - " label-w "px) * " @zoom ")")}}
+       [:div.lane.lane-video
+        [:div.lane-label "Video"]
+        ;; Double-click marks a split. It is the counterpart of right-click:
+        ;; one makes a handle, the other uses it. Both live on the lane because
+        ;; the lane is where the timeline is.
+        [:div.lane-body {:on-click seek-from-event
+                         :on-double-click #(split-here! take %)
+                         :on-context-menu #(open-piece-menu! take %)}
+         [:div.video-strip]
+         [piece-highlight take]]]
+       [:div.lane.lane-audio
+        [:div.lane-label "Audio"]
+        [:div.lane-body {:on-click seek-from-event
+                         :on-double-click #(split-here! take %)
+                         :on-context-menu #(open-piece-menu! take %)}
+         (if peaks
+           ;; Drawn at the voice level, so the slider above shows its effect
+           ;; here rather than only in the exported file.
+           [waveform (:peaks peaks) (double (or (:voice-gain take) 1.0))]
+           [:div.empty {:style {:padding "8px"}} "reading waveform…"])
+         [piece-highlight take]]]
+       [audio-lane take dur :music "Music" "drop an audio file here, or press +"]
+       [audio-lane take dur :fx    "FX"    "drop an effect here, or press +"]
+       ;; Positioned exactly the way the playhead is, so a seam and the playhead
+       ;; sitting on the same instant land on the same pixel.
+       (when (pos? dur)
+         (for [{:keys [i at added?]} (seams take)]
+           ^{:key (str i "-" at)}
+           [:div.seam {:class (when added? "added")
+                       :style {:left (str "calc(" label-w "px + (100% - " label-w "px) * "
+                                          (/ at dur) ")")}}
+            ;; The head is the only part that takes a pointer — the line itself
+            ;; stays out of the way so it never intercepts a click meant for the
+            ;; lane underneath it.
+            [:div.seam-head
+             {:title (str (if added? "marker" "join") " at " (fmt at)
+                          " — right-click"
+                          (when-not added? " (a join cannot be removed)"))
+              :on-context-menu #(open-seam-menu! take {:i i :at at :added? added?} %)
+              :on-click #(.stopPropagation %)
+              :on-double-click #(.stopPropagation %)}]]))
+       [:div.playhead {:ref   #(reset! playhead-el %)
+                       :class (when armed "armed")
+                       :style {:left (str label-w "px")}}]]]
+     ;; The menus stay outside the scroller. They open *above* the lane they
+     ;; are about, and a box that scrolls in one direction clips what leaves it
+     ;; in the other — so in there, a menu would be cut off at the top edge.
      [piece-menu-view take]
      [music-menu-view take]]))
 

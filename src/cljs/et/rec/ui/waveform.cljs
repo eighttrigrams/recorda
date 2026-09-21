@@ -41,6 +41,16 @@
   "Where the -12 mark falls on that scale: 0.8 of the half-height."
   (- 1.0 (/ aim-dbfs floor-dbfs)))
 
+(def ^:private max-backing
+  "The widest backing store to ask a canvas for, in device pixels.
+
+   Zoomed in, the lane is tens of thousands of CSS pixels across, and twice
+   that is past what a canvas is allowed to be — past the limit a browser does
+   not clamp it, it hands back a canvas that draws nothing at all. The device
+   ratio is the part of this that can give: a soft waveform still shows where
+   the speech is, a blank one shows nothing."
+  16384)
+
 (defn- css-var [el name]
   (-> (js/getComputedStyle el) (.getPropertyValue name) (.trim)))
 
@@ -54,10 +64,11 @@
    and the only place that used to be visible was the exported audio."
   [canvas peaks gain]
   (when (and canvas (seq peaks))
-    (let [dpr  (or (.-devicePixelRatio js/window) 1)
-          rect (.getBoundingClientRect canvas)
+    (let [rect (.getBoundingClientRect canvas)
           w    (.-width rect)
           h    (.-height rect)
+          dpr  (min (or (.-devicePixelRatio js/window) 1)
+                    (/ max-backing (max 1 w)))
           n    (count peaks)
           g    (double (or gain 1.0))]
       (when (and (pos? w) (pos? h))
@@ -70,7 +81,14 @@
               full   (- mid 2)          ; pixels from the middle to 0 dBFS
               accent (css-var canvas "--accent")
               over   (css-var canvas "--record")
-              guide  (css-var canvas "--muted-text")]
+              guide  (css-var canvas "--muted-text")
+              ;; One column per pixel, until the lane is wider than there are
+              ;; peaks to fill it — which is what zooming in does. Past that
+              ;; point a per-pixel loop is drawing the same peak into twenty
+              ;; adjacent columns: twenty times the work for the same picture,
+              ;; on the thread the audio clock runs on.
+              cols   (max 1 (min (js/Math.floor w) n))
+              cw     (/ w cols)]
           (.setTransform ctx dpr 0 0 dpr 0 0)
           (.clearRect ctx 0 0 w h)
           (set! (.-fillStyle ctx) accent)
@@ -78,14 +96,14 @@
           ;; thousand columns a redraw the parse cost shows up while the slider
           ;; is under the pointer.
           (loop [x 0, red? false]
-            (when (< x (js/Math.floor w))
+            (when (< x cols)
               ;; Each column takes the loudest peak falling under it, so a
               ;; narrower window hides no transient — it just stacks more of
               ;; them into the same pixel. Averaging here would make a clipped
               ;; passage and a quiet one look alike, which is the one thing
               ;; this lane is for.
-              (let [from (js/Math.floor (* (/ x w) n))
-                    to   (min n (max (inc from) (js/Math.floor (* (/ (inc x) w) n))))
+              (let [from (js/Math.floor (* (/ x cols) n))
+                    to   (min n (max (inc from) (js/Math.floor (* (/ (inc x) cols) n))))
                     amp  (loop [i from m 0]
                            (if (>= i to) m (recur (inc i) (max m (nth peaks i 0)))))
                     a    (* amp g)
@@ -98,7 +116,10 @@
                     bar  (max 0.5 (* (lane-frac a) full))]
                 (when (not= hot? red?)
                   (set! (.-fillStyle ctx) (if hot? over accent)))
-                (.fillRect ctx x (- mid bar) 1 (* 2 bar))
+                ;; Rounded up, and so overlapping its neighbour by a fraction
+                ;; of a pixel rather than leaving a gap: a hairline of
+                ;; background through a wave reads as a cut in the sound.
+                (.fillRect ctx (* x cw) (- mid bar) (js/Math.ceil cw) (* 2 bar))
                 (recur (inc x) hot?))))
           ;; The aim line goes on top of the wave, not under it: under it, the
           ;; one passage where you want to check the level is the one passage
@@ -136,15 +157,25 @@
    The canvas is captured through a :ref rather than reagent.core/dom-node,
    which reagent 2 no longer has."
   [_peaks _gain]
-  (let [node   (atom nil)
-        latest (atom [nil 1.0])
-        redraw #(let [[p g] @latest] (draw! @node p g))]
+  (let [node     (atom nil)
+        observer (atom nil)
+        latest   (atom [nil 1.0])
+        redraw   #(let [[p g] @latest] (draw! @node p g))]
     (r/create-class
       {:display-name "waveform"
        :component-did-mount
-       (fn [_] (.addEventListener js/window "resize" redraw) (redraw))
+       ;; Watches the element rather than the window: the lane changes width
+       ;; without the window doing anything at all — the zoom slider widens it
+       ;; — and a window listener would leave the wave drawn at the width it
+       ;; used to have, stretched by nothing and stale.
+       (fn [_]
+         (when-let [el @node]
+           (let [ro (js/ResizeObserver. (fn [_entries _obs] (redraw)))]
+             (reset! observer ro)
+             (.observe ro el)))
+         (redraw))
        :component-will-unmount
-       (fn [_] (.removeEventListener js/window "resize" redraw))
+       (fn [_] (some-> @observer (.disconnect)))
        :component-did-update (fn [_] (redraw))
        :reagent-render
        (fn [peaks gain]
